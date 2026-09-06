@@ -147,7 +147,7 @@ static void __attribute__((constructor)) initialize(void) {
         loadRules();
         vpnReloadSettingsCache();
 
-        CFNotificationCenterAddObserver(CFNotificationCenterGetDistributedCenter(),
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                         NULL,
                                         settingsChangedCallback,
                                         (CFStringRef)kGABDarwinNotification,

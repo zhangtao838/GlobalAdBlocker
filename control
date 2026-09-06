@@ -1,6 +1,6 @@
 Package: com.globaladblocker
 Name: GlobalAdBlocker
-Version: 1.9
+Version: 2.0
 Architecture: iphoneos-arm64
 Description: 全局广告拦截器，支持导入 Loon 规则，按 App 单独开关
 Maintainer: GlobalAdBlocker
