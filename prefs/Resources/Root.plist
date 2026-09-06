@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>items</key>
+	<array>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>全局广告拦截器，内置 20 万条广告域名规则，支持导入 Loon 格式规则。默认所有 App 均未开启，需手动开启才会拦截，可减小资源开销。</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.globaladblocker.settingsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.globaladblocker.settings</string>
+			<key>key</key>
+			<string>GABMasterEnabled</string>
+			<key>label</key>
+			<string>启用插件</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>功能</string>
+		</dict>
+		<dict>
+			<key>action</key>
+			<string>openAppList</string>
+			<key>cell</key>
+			<string>PSLinkCell</string>
+			<key>detail</key>
+			<string>GABAppListController</string>
+			<key>label</key>
+			<string>按 App 管理</string>
+		</dict>
+		<dict>
+			<key>action</key>
+			<string>openRuleManager</string>
+			<key>cell</key>
+			<string>PSLinkCell</string>
+			<key>detail</key>
+			<string>GABRuleManagerController</string>
+			<key>label</key>
+			<string>规则管理</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>调试日志文件: /tmp/globaladblocker.log，可用 Filza 查看。</string>
+		</dict>
+	</array>
+	<key>title</key>
+	<string>GlobalAdBlocker</string>
+</dict>
+</plist>
