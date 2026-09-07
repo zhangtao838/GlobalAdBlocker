@@ -30,13 +30,6 @@ jobs:
           echo "THEOS=$HOME/theos" >> $GITHUB_ENV
           echo "$HOME/theos/bin" >> $GITHUB_PATH
 
-      - name: Disable armv7 in Theos
-        run: |
-          sed -i '' 's/armv7//g' $THEOS/makefiles/common.mk
-          sed -i '' 's/ARCHS ?= armv7/ARCHS ?=/' $THEOS/makefiles/targets/_common/iphone.mk
-          sed -i '' 's/armv7//g' $THEOS/makefiles/targets/_common/iphone.mk
-          grep -n "ARCHS" $THEOS/makefiles/targets/_common/iphone.mk | head -5
-
       - name: Fix fakeroot on Apple Silicon
         run: |
           sed -i '' 's/$(FAKEROOT) -c/true/' $THEOS/makefiles/stage.mk
@@ -50,18 +43,6 @@ jobs:
           cp -r iPhoneOS26.5.sdk $THEOS/sdks/
           echo "Available SDKs:"
           ls -la $THEOS/sdks/
-
-      - name: Install AltList framework
-        run: |
-          git clone --depth 1 https://github.com/opa334/AltList.git /tmp/AltList
-          cd /tmp/AltList
-          sed -i '' 's|TARGET := iphone:clang:14.5:7.0|TARGET := iphone:clang:26.5:15.0|g' Makefile
-          sed -i '' 's|TARGET := iphone:clang:16.5:15.0|TARGET := iphone:clang:26.5:15.0|g' Makefile
-          grep "TARGET" Makefile
-          make
-          cp -r AltList.framework $THEOS/lib/
-          echo "AltList installed:"
-          ls -la $THEOS/lib/AltList.framework/
 
       - name: Build (${{ matrix.scheme }})
         run: |

@@ -2,8 +2,8 @@ Package: com.globaladblocker
 Name: GlobalAdBlocker
 Version: 3.0
 Architecture: iphoneos-arm64e
-Description: 全局广告拦截器，支持导入 Loon 规则，按 App 单独开关
+Description: 全局广告拦截器，mmap共享内存+二进制哈希表，支持导入Loon规则，按App单独开关
 Maintainer: GlobalAdBlocker
 Author: GlobalAdBlocker
 Section: Tweaks
-Depends: mobilesubstrate, preferenceloader, com.opa334.altlist, firmware (>= 15.0)
+Depends: mobilesubstrate, preferenceloader, firmware (>= 15.0)

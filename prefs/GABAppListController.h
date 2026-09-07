@@ -1,4 +1,4 @@
-#import <AltList/AltList.h>
+#import "ATLApplicationListMultiSelectionController.h"
 
 @interface GABAppListController : ATLApplicationListMultiSelectionController
 @end
