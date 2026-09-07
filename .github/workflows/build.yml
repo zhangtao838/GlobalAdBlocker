@@ -55,8 +55,9 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/opa334/AltList.git /tmp/AltList
           cd /tmp/AltList
-          export TARGET=iphone:clang:26.5:15.0
-          export SDKVERSION=26.5
+          sed -i '' 's|TARGET := iphone:clang:14.5:7.0|TARGET := iphone:clang:26.5:15.0|g' Makefile
+          sed -i '' 's|TARGET := iphone:clang:16.5:15.0|TARGET := iphone:clang:26.5:15.0|g' Makefile
+          grep "TARGET" Makefile
           make
           cp -r AltList.framework $THEOS/lib/
           echo "AltList installed:"
