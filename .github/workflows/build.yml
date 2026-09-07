@@ -30,15 +30,6 @@ jobs:
           echo "THEOS=$HOME/theos" >> $GITHUB_ENV
           echo "$HOME/theos/bin" >> $GITHUB_PATH
 
-      - name: Install AltList framework
-        run: |
-          git clone --depth 1 https://github.com/opa334/AltList.git /tmp/AltList
-          cd /tmp/AltList
-          make
-          cp -r AltList.framework $THEOS/lib/
-          echo "AltList installed:"
-          ls -la $THEOS/lib/AltList.framework/
-
       - name: Fix fakeroot on Apple Silicon
         run: |
           sed -i '' 's/$(FAKEROOT) -c/true/' $THEOS/makefiles/stage.mk
