@@ -1,8 +1,5 @@
 {
     Filter = {
-        Any = (
-            { Bundles = ("com.apple.UIKit"); },
-            { Bundles = ("com.apple.Foundation"); }
-        );
+        Executables = (".*");
     };
 }
