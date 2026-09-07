@@ -69,12 +69,40 @@ static void GABRunCommand(const char *cmd) {
     NSString *hostsContent = [NSString stringWithContentsOfFile:hostsPath encoding:NSUTF8StringEncoding error:nil];
     if (!hostsContent || ![hostsContent containsString:kGABHostsStart]) {
         GABLog(@"hosts 中无 GlobalAdBlocker 标记，尝试自动导入默认规则");
-        NSString *defaultRulesPath = GABResolvePath(kGABDefaultRulesPath);
-        if (![[NSFileManager defaultManager] fileExistsAtPath:defaultRulesPath]) {
-            defaultRulesPath = [[NSBundle bundleForClass:[self class]] pathForResource:@"default_rules" ofType:@"json"];
+
+        // 多种方式查找 default_rules.txt
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSString *defaultRulesPath = nil;
+
+        // 1. 用 bundleForClass 查找（最可靠）
+        NSBundle *myBundle = [NSBundle bundleForClass:[self class]];
+        defaultRulesPath = [myBundle pathForResource:@"default_rules" ofType:@"txt"];
+        GABLog(@"方式1 bundleForClass: %@ (bundle=%@)", defaultRulesPath, myBundle.bundlePath);
+
+        // 2. 用 jbrootpath 转换的路径查找
+        if (!defaultRulesPath || ![fm fileExistsAtPath:defaultRulesPath]) {
+            NSString *resolved = GABResolvePath(kGABDefaultRulesPath);
+            GABLog(@"方式2 jbrootpath: %@ (存在=%@)", resolved, [fm fileExistsAtPath:resolved] ? @"是" : @"否");
+            if ([fm fileExistsAtPath:resolved]) defaultRulesPath = resolved;
         }
-        GABLog(@"默认规则路径: %@ (存在: %@)", defaultRulesPath, defaultRulesPath ? @"是" : @"否");
-        if (defaultRulesPath && [[NSFileManager defaultManager] fileExistsAtPath:defaultRulesPath]) {
+
+        // 3. 硬编码 RootHide 路径
+        if (!defaultRulesPath || ![fm fileExistsAtPath:defaultRulesPath]) {
+            NSArray *fallbackPaths = @[
+                @"/var/jb/Library/PreferenceBundles/GlobalAdBlockerPrefs.bundle/default_rules.txt",
+                @"/Library/PreferenceBundles/GlobalAdBlockerPrefs.bundle/default_rules.txt"
+            ];
+            for (NSString *p in fallbackPaths) {
+                GABLog(@"方式3 fallback: %@ (存在=%@)", p, [fm fileExistsAtPath:p] ? @"是" : @"否");
+                if ([fm fileExistsAtPath:p]) {
+                    defaultRulesPath = p;
+                    break;
+                }
+            }
+        }
+
+        GABLog(@"最终默认规则路径: %@ (存在: %@)", defaultRulesPath, defaultRulesPath && [fm fileExistsAtPath:defaultRulesPath] ? @"是" : @"否");
+        if (defaultRulesPath && [fm fileExistsAtPath:defaultRulesPath]) {
             [self importRulesFromJSONFile:[NSURL fileURLWithPath:defaultRulesPath] silent:YES];
         }
     }
@@ -186,17 +214,18 @@ static void GABRunCommand(const char *cmd) {
 
         [specs addObject:[PSSpecifier preferenceSpecifierNamed:@"操作" target:self set:Nil get:Nil detail:Nil cell:PSGroupCell edit:Nil]];
 
-        PSSpecifier *importSpec = [PSSpecifier preferenceSpecifierNamed:@"" target:self set:Nil get:Nil detail:Nil cell:PSGroupCell edit:Nil];
+        // 用 PSTitleValueCell 承载按钮（PSGroupCell 不会渲染成普通 cell）
+        PSSpecifier *importSpec = [PSSpecifier preferenceSpecifierNamed:@"" target:self set:Nil get:Nil detail:Nil cell:PSTitleValueCell edit:Nil];
         [importSpec setProperty:@"从文件导入（Loon 格式）" forKey:@"buttonTitle"];
         [importSpec setProperty:@"importRulesTapped" forKey:@"buttonAction"];
         [specs addObject:importSpec];
 
-        PSSpecifier *reloadSpec = [PSSpecifier preferenceSpecifierNamed:@"" target:self set:Nil get:Nil detail:Nil cell:PSGroupCell edit:Nil];
+        PSSpecifier *reloadSpec = [PSSpecifier preferenceSpecifierNamed:@"" target:self set:Nil get:Nil detail:Nil cell:PSTitleValueCell edit:Nil];
         [reloadSpec setProperty:@"重新加载规则" forKey:@"buttonTitle"];
         [reloadSpec setProperty:@"reloadRulesTapped" forKey:@"buttonAction"];
         [specs addObject:reloadSpec];
 
-        PSSpecifier *clearSpec = [PSSpecifier preferenceSpecifierNamed:@"" target:self set:Nil get:Nil detail:Nil cell:PSGroupCell edit:Nil];
+        PSSpecifier *clearSpec = [PSSpecifier preferenceSpecifierNamed:@"" target:self set:Nil get:Nil detail:Nil cell:PSTitleValueCell edit:Nil];
         [clearSpec setProperty:@"清空规则" forKey:@"buttonTitle"];
         [clearSpec setProperty:@"clearRulesTapped" forKey:@"buttonAction"];
         [specs addObject:clearSpec];
@@ -371,6 +400,17 @@ static void GABRunCommand(const char *cmd) {
 }
 
 #pragma mark - 自定义按钮 cell
+
+- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
+    NSArray *specs = [self specifiers];
+    if (indexPath.row < (NSInteger)specs.count) {
+        PSSpecifier *specifier = specs[indexPath.row];
+        if ([specifier propertyForKey:@"buttonAction"]) {
+            return 52.0; // 按钮 cell 高度
+        }
+    }
+    return [super tableView:tableView heightForRowAtIndexPath:indexPath];
+}
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [super tableView:tableView cellForRowAtIndexPath:indexPath];
