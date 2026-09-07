@@ -30,6 +30,11 @@ jobs:
           echo "THEOS=$HOME/theos" >> $GITHUB_ENV
           echo "$HOME/theos/bin" >> $GITHUB_PATH
 
+      - name: Disable armv7 in Theos
+        run: |
+          sed -i '' 's/armv7//g' $THEOS/makefiles/common.mk
+          grep -rn "armv7" $THEOS/makefiles/ 2>/dev/null | head -5 || echo "armv7已清除"
+
       - name: Fix fakeroot on Apple Silicon
         run: |
           sed -i '' 's/$(FAKEROOT) -c/true/' $THEOS/makefiles/stage.mk
@@ -46,24 +51,12 @@ jobs:
 
       - name: Install AltList framework
         run: |
-          curl -L -o /tmp/altlist.deb "https://chariz.com/api/deb/com.opa334.altlist"
-          cd /tmp
-          ar -x altlist.deb
-          tar -xzf data.tar.gz 2>/dev/null || tar -xf data.tar.* 2>/dev/null || true
-          find . -name "AltList.framework" -type d 2>/dev/null
-          if [ -d "./Library/Frameworks/AltList.framework" ]; then
-            cp -r ./Library/Frameworks/AltList.framework $THEOS/lib/
-          elif [ -d "./System/Library/Frameworks/AltList.framework" ]; then
-            cp -r ./System/Library/Frameworks/AltList.framework $THEOS/lib/
-          else
-            echo "AltList.framework not found in deb, trying source build"
-            git clone --depth 1 https://github.com/opa334/AltList.git /tmp/AltList-src
-            cd /tmp/AltList-src
-            sed -i '' 's/iphone:clang:14.5/iphone:clang:26.5/g' Makefile
-            sed -i '' 's/iphone:clang:latest:7.0/iphone:clang:26.5:15.0/g' Makefile
-            make ARCHS="arm64 arm64e"
-            cp -r AltList.framework $THEOS/lib/
-          fi
+          git clone --depth 1 https://github.com/opa334/AltList.git /tmp/AltList
+          cd /tmp/AltList
+          sed -i '' 's/iphone:clang:14.5/iphone:clang:26.5/g' Makefile
+          sed -i '' 's/iphone:clang:latest:7.0/iphone:clang:26.5:15.0/g' Makefile
+          make
+          cp -r AltList.framework $THEOS/lib/
           echo "AltList installed:"
           ls -la $THEOS/lib/AltList.framework/
 
