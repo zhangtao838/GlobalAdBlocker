@@ -33,7 +33,9 @@ jobs:
       - name: Disable armv7 in Theos
         run: |
           sed -i '' 's/armv7//g' $THEOS/makefiles/common.mk
-          grep -rn "armv7" $THEOS/makefiles/ 2>/dev/null | head -5 || echo "armv7已清除"
+          sed -i '' 's/ARCHS ?= armv7/ARCHS ?=/' $THEOS/makefiles/targets/_common/iphone.mk
+          sed -i '' 's/armv7//g' $THEOS/makefiles/targets/_common/iphone.mk
+          grep -n "ARCHS" $THEOS/makefiles/targets/_common/iphone.mk | head -5
 
       - name: Fix fakeroot on Apple Silicon
         run: |
