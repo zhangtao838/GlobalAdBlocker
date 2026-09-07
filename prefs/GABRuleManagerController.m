@@ -6,6 +6,7 @@
 
 #define kGABDarwinNotification @"com.globaladblocker.settingsChanged"
 #define kGABRulesPath @"/Library/Application Support/GlobalAdBlocker/rules.bin"
+#define kGABUserRulesPath @"/var/mobile/Documents/GlobalAdBlocker/rules.bin"
 
 @implementation GABRuleManagerController
 
@@ -13,22 +14,44 @@
     [super viewDidLoad];
     self.title = @"规则管理";
     GABLog(@"规则管理页面加载(v3.0 二进制规则)");
-    [self loadRuleCounts];
-}
 
-- (void)loadRuleCounts {
+    // 首次打开时，如果用户空间没有规则文件，但越狱空间有，自动复制过去
     NSFileManager *fm = [NSFileManager defaultManager];
-
-    NSString *rulesPath = nil;
-    if ([fm fileExistsAtPath:kGABRulesPath]) {
-        rulesPath = kGABRulesPath;
-    } else {
-        NSString *jbPath = [@"/var/jb" stringByAppendingString:kGABRulesPath];
-        if ([fm fileExistsAtPath:jbPath]) {
-            rulesPath = jbPath;
+    if (![fm fileExistsAtPath:kGABUserRulesPath]) {
+        NSString *sourcePath = nil;
+        if ([fm fileExistsAtPath:kGABRulesPath]) {
+            sourcePath = kGABRulesPath;
+        } else if ([fm fileExistsAtPath:[@"/var/jb" stringByAppendingString:kGABRulesPath]]) {
+            sourcePath = [@"/var/jb" stringByAppendingString:kGABRulesPath];
+        }
+        if (sourcePath) {
+            [fm createDirectoryAtPath:[kGABUserRulesPath stringByDeletingLastPathComponent] withIntermediateDirectories:YES attributes:nil error:nil];
+            BOOL copied = [fm copyItemAtPath:sourcePath toPath:kGABUserRulesPath error:nil];
+            GABLog(@"自动复制默认规则到用户空间: %@ -> %@ (%@)", sourcePath, kGABUserRulesPath, copied ? @"成功" : @"失败");
         }
     }
 
+    [self loadRuleCounts];
+}
+
+// 查找规则文件（优先用户空间，其次越狱空间，支持 RootHide）
+- (NSString *)findRulesFile {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray *paths = @[
+        kGABUserRulesPath,
+        kGABRulesPath,
+        [@"/var/jb" stringByAppendingString:kGABRulesPath]
+    ];
+    for (NSString *path in paths) {
+        if ([fm fileExistsAtPath:path]) {
+            return path;
+        }
+    }
+    return nil;
+}
+
+- (void)loadRuleCounts {
+    NSString *rulesPath = [self findRulesFile];
     GABLog(@"规则文件路径: %@ (存在: %@)", rulesPath ?: @"未找到", rulesPath ? @"是" : @"否");
 
     if (!rulesPath) {
@@ -87,15 +110,15 @@
         [specs addObject:[PSSpecifier preferenceSpecifierNamed:@"操作" target:self set:Nil get:Nil detail:Nil cell:PSGroupCell edit:Nil]];
 
         PSSpecifier *importSpec = [PSSpecifier preferenceSpecifierNamed:@"从文件导入（Loon 格式）" target:self set:Nil get:Nil detail:Nil cell:PSButtonCell edit:Nil];
-        [importSpec setProperty:@"importRules" forKey:@"action"];
+        [importSpec setProperty:@"importRules:" forKey:@"action"];
         [specs addObject:importSpec];
 
         PSSpecifier *reloadSpec = [PSSpecifier preferenceSpecifierNamed:@"重新加载规则" target:self set:Nil get:Nil detail:Nil cell:PSButtonCell edit:Nil];
-        [reloadSpec setProperty:@"reloadRules" forKey:@"action"];
+        [reloadSpec setProperty:@"reloadRules:" forKey:@"action"];
         [specs addObject:reloadSpec];
 
         PSSpecifier *clearSpec = [PSSpecifier preferenceSpecifierNamed:@"清空规则" target:self set:Nil get:Nil detail:Nil cell:PSButtonCell edit:Nil];
-        [clearSpec setProperty:@"clearRules" forKey:@"action"];
+        [clearSpec setProperty:@"clearRules:" forKey:@"action"];
         [specs addObject:clearSpec];
 
         _specifiers = specs;
@@ -111,7 +134,7 @@
     return [NSString stringWithFormat:@"%u 条", (unsigned)self.suffixCount];
 }
 
-- (void)reloadRules {
+- (void)reloadRules:(PSSpecifier *)specifier {
     GABLog(@"手动重新加载规则");
     [self loadRuleCounts];
     _specifiers = nil;
@@ -124,7 +147,7 @@
     [self showAlert:@"已重新加载" message:[NSString stringWithFormat:@"精确 %u 条，后缀 %u 条，所有 App 进程已立即重新映射", (unsigned)self.exactCount, (unsigned)self.suffixCount]];
 }
 
-- (void)clearRules {
+- (void)clearRules:(PSSpecifier *)specifier {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"清空规则"
                                                                      message:@"确定删除所有规则吗？删除后将不会拦截任何广告，可重新导入 Loon 规则。"
                                                               preferredStyle:UIAlertControllerStyleAlert];
@@ -132,6 +155,7 @@
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"确定清空" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
         NSFileManager *fm = [NSFileManager defaultManager];
+        [fm removeItemAtPath:kGABUserRulesPath error:nil];
         [fm removeItemAtPath:kGABRulesPath error:nil];
         [fm removeItemAtPath:[@"/var/jb" stringByAppendingString:kGABRulesPath] error:nil];
 
@@ -148,7 +172,7 @@
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-- (void)importRules {
+- (void)importRules:(PSSpecifier *)specifier {
     GABLog(@"点击导入规则按钮");
 
     UIDocumentPickerViewController *picker = nil;
@@ -264,22 +288,26 @@ static uint32_t next_power_of_2(uint32_t n) {
 
     GABLog(@"二进制规则编译完成: %lu bytes", (unsigned long)binaryData.length);
 
-    // 保存到文件
+    // 保存到文件（优先用户空间，设置进程能写入）
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *savePath = kGABRulesPath;
-    [fm createDirectoryAtPath:[savePath stringByDeletingLastPathComponent] withIntermediateDirectories:YES attributes:nil error:nil];
+    NSArray *savePaths = @[
+        kGABUserRulesPath,
+        kGABRulesPath,
+        [@"/var/jb" stringByAppendingString:kGABRulesPath]
+    ];
 
-    BOOL saved = [binaryData writeToFile:savePath atomically:YES];
-    GABLog(@"保存到 %@: %@", savePath, saved ? @"成功" : @"失败");
-
-    if (!saved) {
-        NSString *jbSavePath = [@"/var/jb" stringByAppendingString:savePath];
-        [fm createDirectoryAtPath:[jbSavePath stringByDeletingLastPathComponent] withIntermediateDirectories:YES attributes:nil error:nil];
-        saved = [binaryData writeToFile:jbSavePath atomically:YES];
-        GABLog(@"保存到 %@: %@", jbSavePath, saved ? @"成功" : @"失败");
+    NSString *savedPath = nil;
+    for (NSString *savePath in savePaths) {
+        [fm createDirectoryAtPath:[savePath stringByDeletingLastPathComponent] withIntermediateDirectories:YES attributes:nil error:nil];
+        BOOL saved = [binaryData writeToFile:savePath atomically:YES];
+        GABLog(@"保存到 %@: %@", savePath, saved ? @"成功" : @"失败");
+        if (saved) {
+            savedPath = savePath;
+            break;
+        }
     }
 
-    if (!saved) {
+    if (!savedPath) {
         [self showAlert:@"导入失败" message:@"无法保存规则文件，请检查权限"];
         return;
     }
@@ -298,7 +326,7 @@ static uint32_t next_power_of_2(uint32_t n) {
                       (unsigned long)(exactDomains.count + suffixDomains.count),
                       (unsigned long)exactDomains.count,
                       (unsigned long)suffixDomains.count,
-                      savePath]];
+                      savedPath]];
 }
 
 // 编译规则为二进制格式

@@ -15,6 +15,7 @@
 
 // 二进制规则文件路径，Filza 可直接替换
 #define kGABRulesPath @"/Library/Application Support/GlobalAdBlocker/rules.bin"
+#define kGABUserRulesPath @"/var/mobile/Documents/GlobalAdBlocker/rules.bin"
 
 // mmap 映射的规则上下文
 static gab_rules_ctx_t g_rulesCtx;
@@ -24,9 +25,10 @@ static int g_rulesMmapFd = -1;
 static BOOL g_rulesMapped = NO;
 static BOOL g_rulesMapFailed = NO;  // 映射失败标记，避免重复尝试
 
-// 打开规则文件（支持 RootHide 路径）
+// 打开规则文件（优先用户空间，其次越狱空间，支持 RootHide）
 static int openRulesFile(const char **outPath) {
     const char *paths[] = {
+        [kGABUserRulesPath fileSystemRepresentation],
         [kGABRulesPath fileSystemRepresentation],
         [[@"/var/jb" stringByAppendingString:kGABRulesPath] fileSystemRepresentation],
         NULL
