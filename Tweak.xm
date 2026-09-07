@@ -8,6 +8,9 @@
 #import "GABLog.h"
 #import "GABBinaryRules.h"
 
+// libroot - RootHide 路径转换
+extern NSString *jbrootpath(NSString *path);
+
 #define kGABDefaultsDomain @"com.globaladblocker.settings"
 #define kGABAppEnabledPrefix @"GABAppEnabled_"
 #define kGABDarwinNotification @"com.globaladblocker.settingsChanged"
@@ -17,6 +20,17 @@
 #define kGABRulesPath @"/Library/Application Support/GlobalAdBlocker/rules.bin"
 #define kGABUserRulesPath @"/var/mobile/Documents/GlobalAdBlocker/rules.bin"
 
+// 路径转换工具
+static NSString *GABResolvePath(NSString *path) {
+    if (!path) return nil;
+    if ([path hasPrefix:@"/var/mobile/"]) return path;
+    @try {
+        NSString *resolved = jbrootpath(path);
+        if (resolved) return resolved;
+    } @catch (NSException *e) {}
+    return path;
+}
+
 // mmap 映射的规则上下文
 static gab_rules_ctx_t g_rulesCtx;
 static void *g_rulesMmapAddr = NULL;
@@ -25,12 +39,18 @@ static int g_rulesMmapFd = -1;
 static BOOL g_rulesMapped = NO;
 static BOOL g_rulesMapFailed = NO;  // 映射失败标记，避免重复尝试
 
-// 打开规则文件（优先用户空间，其次越狱空间，支持 RootHide）
+// 打开规则文件（优先用户空间，其次越狱空间用 jbrootpath 转换）
 static int openRulesFile(const char **outPath) {
+    // 用静态变量保存转换后的路径，避免临时对象被释放
+    static NSString *resolvedJBPath = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        resolvedJBPath = GABResolvePath(kGABRulesPath);
+    });
+
     const char *paths[] = {
         [kGABUserRulesPath fileSystemRepresentation],
-        [kGABRulesPath fileSystemRepresentation],
-        [[@"/var/jb" stringByAppendingString:kGABRulesPath] fileSystemRepresentation],
+        [resolvedJBPath fileSystemRepresentation],
         NULL
     };
 

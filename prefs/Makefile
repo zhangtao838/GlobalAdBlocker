@@ -9,5 +9,6 @@ GlobalAdBlockerPrefs_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-tauto
 GlobalAdBlockerPrefs_INSTALL_PATH = /Library/PreferenceBundles
 GlobalAdBlockerPrefs_FRAMEWORKS = UIKit MobileCoreServices
 GlobalAdBlockerPrefs_PRIVATE_FRAMEWORKS = Preferences
+GlobalAdBlockerPrefs_LIBRARIES = root
 
 include $(THEOS_MAKE_PATH)/bundle.mk

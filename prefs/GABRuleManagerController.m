@@ -4,46 +4,84 @@
 #import "GABLog.h"
 #import "GABBinaryRules.h"
 
+// libroot - RootHide 路径转换
+extern NSString *jbrootpath(NSString *path);
+
 #define kGABDarwinNotification @"com.globaladblocker.settingsChanged"
 #define kGABRulesPath @"/Library/Application Support/GlobalAdBlocker/rules.bin"
 #define kGABUserRulesPath @"/var/mobile/Documents/GlobalAdBlocker/rules.bin"
+
+// 路径转换工具：优先用户空间，其次用 jbrootpath 转换越狱路径
+static NSString *GABResolvePath(NSString *path) {
+    if (!path) return nil;
+    // 用户空间路径直接返回
+    if ([path hasPrefix:@"/var/mobile/"]) return path;
+    // 越狱路径用 jbrootpath 转换
+    @try {
+        NSString *resolved = jbrootpath(path);
+        if (resolved) return resolved;
+    } @catch (NSException *e) {}
+    return path;
+}
 
 @implementation GABRuleManagerController
 
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"规则管理";
-    GABLog(@"规则管理页面加载(v3.0 二进制规则)");
+    GABLog(@"规则管理页面加载(v3.2 二进制规则)");
 
-    // 首次打开时，如果用户空间没有规则文件，但越狱空间有，自动复制过去
+    // 首次打开时，如果用户空间没有规则文件，从 PreferenceBundle 复制默认规则
     NSFileManager *fm = [NSFileManager defaultManager];
     if (![fm fileExistsAtPath:kGABUserRulesPath]) {
-        NSString *sourcePath = nil;
-        if ([fm fileExistsAtPath:kGABRulesPath]) {
-            sourcePath = kGABRulesPath;
-        } else if ([fm fileExistsAtPath:[@"/var/jb" stringByAppendingString:kGABRulesPath]]) {
-            sourcePath = [@"/var/jb" stringByAppendingString:kGABRulesPath];
+        // 优先从当前 bundle 读取
+        NSString *bundleRulesPath = [[NSBundle mainBundle] pathForResource:@"rules" ofType:@"bin"];
+        if (!bundleRulesPath) {
+            // 尝试从 PreferenceBundle 路径读取（用 jbrootpath 转换）
+            NSArray *bundlePaths = @[
+                GABResolvePath(@"/Library/PreferenceBundles/GlobalAdBlockerPrefs.bundle/rules.bin"),
+                GABResolvePath(kGABRulesPath)
+            ];
+            for (NSString *path in bundlePaths) {
+                if ([fm fileExistsAtPath:path]) {
+                    bundleRulesPath = path;
+                    break;
+                }
+            }
         }
-        if (sourcePath) {
+
+        GABLog(@"Bundle 规则路径: %@ (存在: %@)", bundleRulesPath, bundleRulesPath ? @"是" : @"否");
+
+        if (bundleRulesPath && [fm fileExistsAtPath:bundleRulesPath]) {
             [fm createDirectoryAtPath:[kGABUserRulesPath stringByDeletingLastPathComponent] withIntermediateDirectories:YES attributes:nil error:nil];
-            BOOL copied = [fm copyItemAtPath:sourcePath toPath:kGABUserRulesPath error:nil];
-            GABLog(@"自动复制默认规则到用户空间: %@ -> %@ (%@)", sourcePath, kGABUserRulesPath, copied ? @"成功" : @"失败");
+            BOOL copied = [fm copyItemAtPath:bundleRulesPath toPath:kGABUserRulesPath error:nil];
+            GABLog(@"自动复制默认规则到用户空间: %@ -> %@ (%@)", bundleRulesPath, kGABUserRulesPath, copied ? @"成功" : @"失败");
+        } else {
+            GABLog(@"未找到 bundle 中的默认规则文件");
         }
     }
 
     [self loadRuleCounts];
 }
 
-// 查找规则文件（优先用户空间，其次越狱空间，支持 RootHide）
+// 查找规则文件（优先用户空间，其次 bundle，最后越狱空间用 jbrootpath 转换）
 - (NSString *)findRulesFile {
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSArray *paths = @[
-        kGABUserRulesPath,
-        kGABRulesPath,
-        [@"/var/jb" stringByAppendingString:kGABRulesPath]
-    ];
+    NSMutableArray *paths = [NSMutableArray array];
+
+    // 1. 用户空间（最高优先级，用户导入的规则）
+    [paths addObject:kGABUserRulesPath];
+
+    // 2. 越狱空间（用 jbrootpath 转换）
+    [paths addObject:GABResolvePath(kGABRulesPath)];
+
+    // 3. bundle 里的默认规则
+    NSString *bundleRulesPath = [[NSBundle mainBundle] pathForResource:@"rules" ofType:@"bin"];
+    if (bundleRulesPath) [paths addObject:bundleRulesPath];
+    [paths addObject:GABResolvePath(@"/Library/PreferenceBundles/GlobalAdBlockerPrefs.bundle/rules.bin")];
+
     for (NSString *path in paths) {
-        if ([fm fileExistsAtPath:path]) {
+        if (path && [fm fileExistsAtPath:path]) {
             return path;
         }
     }
@@ -109,16 +147,20 @@
         // 操作
         [specs addObject:[PSSpecifier preferenceSpecifierNamed:@"操作" target:self set:Nil get:Nil detail:Nil cell:PSGroupCell edit:Nil]];
 
-        PSSpecifier *importSpec = [PSSpecifier preferenceSpecifierNamed:@"从文件导入（Loon 格式）" target:self set:Nil get:Nil detail:Nil cell:PSButtonCell edit:Nil];
-        [importSpec setProperty:@"importRules:" forKey:@"action"];
+        // 用自定义按钮 cell（PSButtonCell 在 RootHide 下无响应，改用 UIButton）
+        PSSpecifier *importSpec = [PSSpecifier preferenceSpecifierNamed:@"" target:self set:Nil get:Nil detail:Nil cell:PSGroupCell edit:Nil];
+        [importSpec setProperty:@"从文件导入（Loon 格式）" forKey:@"buttonTitle"];
+        [importSpec setProperty:@"importRulesTapped" forKey:@"buttonAction"];
         [specs addObject:importSpec];
 
-        PSSpecifier *reloadSpec = [PSSpecifier preferenceSpecifierNamed:@"重新加载规则" target:self set:Nil get:Nil detail:Nil cell:PSButtonCell edit:Nil];
-        [reloadSpec setProperty:@"reloadRules:" forKey:@"action"];
+        PSSpecifier *reloadSpec = [PSSpecifier preferenceSpecifierNamed:@"" target:self set:Nil get:Nil detail:Nil cell:PSGroupCell edit:Nil];
+        [reloadSpec setProperty:@"重新加载规则" forKey:@"buttonTitle"];
+        [reloadSpec setProperty:@"reloadRulesTapped" forKey:@"buttonAction"];
         [specs addObject:reloadSpec];
 
-        PSSpecifier *clearSpec = [PSSpecifier preferenceSpecifierNamed:@"清空规则" target:self set:Nil get:Nil detail:Nil cell:PSButtonCell edit:Nil];
-        [clearSpec setProperty:@"clearRules:" forKey:@"action"];
+        PSSpecifier *clearSpec = [PSSpecifier preferenceSpecifierNamed:@"" target:self set:Nil get:Nil detail:Nil cell:PSGroupCell edit:Nil];
+        [clearSpec setProperty:@"清空规则" forKey:@"buttonTitle"];
+        [clearSpec setProperty:@"clearRulesTapped" forKey:@"buttonAction"];
         [specs addObject:clearSpec];
 
         _specifiers = specs;
@@ -156,8 +198,7 @@
     [alert addAction:[UIAlertAction actionWithTitle:@"确定清空" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
         NSFileManager *fm = [NSFileManager defaultManager];
         [fm removeItemAtPath:kGABUserRulesPath error:nil];
-        [fm removeItemAtPath:kGABRulesPath error:nil];
-        [fm removeItemAtPath:[@"/var/jb" stringByAppendingString:kGABRulesPath] error:nil];
+        [fm removeItemAtPath:GABResolvePath(kGABRulesPath) error:nil];
 
         CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                               (CFStringRef)kGABDarwinNotification,
@@ -292,8 +333,7 @@ static uint32_t next_power_of_2(uint32_t n) {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSArray *savePaths = @[
         kGABUserRulesPath,
-        kGABRulesPath,
-        [@"/var/jb" stringByAppendingString:kGABRulesPath]
+        GABResolvePath(kGABRulesPath)
     ];
 
     NSString *savedPath = nil;
@@ -479,6 +519,75 @@ static uint32_t next_power_of_2(uint32_t n) {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
+}
+
+#pragma mark - 自定义按钮 cell（PSButtonCell 在 RootHide 下无响应，改用 UIButton）
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [super tableView:tableView cellForRowAtIndexPath:indexPath];
+
+    PSSpecifier *specifier = [self specifierForIndexPath:indexPath];
+    NSString *buttonAction = [specifier propertyForKey:@"buttonAction"];
+    NSString *buttonTitle = [specifier propertyForKey:@"buttonTitle"];
+
+    if (buttonAction && buttonTitle) {
+        // 清除 cell 里的默认内容
+        for (UIView *subview in cell.contentView.subviews) {
+            [subview removeFromSuperview];
+        }
+
+        // 创建自定义按钮
+        UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+        button.frame = CGRectMake(15, 8, cell.contentView.bounds.size.width - 30, 36);
+        button.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [button setTitle:buttonTitle forState:UIControlStateNormal];
+        button.titleLabel.font = [UIFont systemFontOfSize:17];
+        button.backgroundColor = [UIColor colorWithRed:0.12 green:0.56 blue:1.0 alpha:1.0];
+        [button setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        button.layer.cornerRadius = 8;
+        button.clipsToBounds = YES;
+
+        // 用关联对象把 action 名存到按钮上
+        objc_setAssociatedObject(button, "buttonAction", buttonAction, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        [button addTarget:self action:@selector(handleButtonTap:) forControlEvents:UIControlEventTouchUpInside];
+
+        [cell.contentView addSubview:button];
+        cell.backgroundColor = [UIColor clearColor];
+    }
+
+    return cell;
+}
+
+- (void)handleButtonTap:(UIButton *)sender {
+    NSString *actionName = objc_getAssociatedObject(sender, "buttonAction");
+    GABLog(@"按钮点击: %@", actionName);
+
+    if (!actionName) return;
+
+    SEL action = NSSelectorFromString(actionName);
+    if ([self respondsToSelector:action]) {
+        // 取消按钮高亮
+        sender.highlighted = NO;
+        [self performSelector:action withObject:nil afterDelay:0.0];
+    } else {
+        GABLog(@"按钮方法不存在: %@", actionName);
+    }
+}
+
+// 按钮点击包装方法（调用原来的逻辑）
+- (void)importRulesTapped {
+    GABLog(@"导入规则按钮被点击");
+    [self importRules:nil];
+}
+
+- (void)reloadRulesTapped {
+    GABLog(@"重新加载按钮被点击");
+    [self reloadRules:nil];
+}
+
+- (void)clearRulesTapped {
+    GABLog(@"清空规则按钮被点击");
+    [self clearRules:nil];
 }
 
 @end
