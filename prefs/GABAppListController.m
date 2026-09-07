@@ -11,27 +11,43 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"按 App 管理";
-    GABLog(@"App列表页面加载(AltList v3.0)");
+    GABLog(@"App列表页面加载(AltList v2.0)");
 }
+
+#pragma mark - 开关状态读写（兼容现有存储格式）
 
 - (void)setApplicationEnabled:(NSNumber *)enabledNum specifier:(PSSpecifier *)specifier {
     [super setApplicationEnabled:enabledNum specifier:specifier];
+
     NSString *bundleId = [specifier propertyForKey:@"applicationIdentifier"];
-    if (!bundleId || bundleId.length == 0) return;
+    if (!bundleId || bundleId.length == 0) {
+        GABLog(@"setApplicationEnabled: 无 bundleId");
+        return;
+    }
+
     NSString *key = [NSString stringWithFormat:@"%@%@", kGABAppEnabledPrefix, bundleId];
     NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kGABDefaultsDomain];
     [defaults setObject:enabledNum forKey:key];
     [defaults synchronize];
+
     GABLog(@"设置 App 开关: %@ = %@", bundleId, enabledNum);
-    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), (CFStringRef)kGABDarwinNotification, NULL, NULL, true);
+
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                          (CFStringRef)kGABDarwinNotification,
+                                          NULL, NULL, true);
 }
 
 - (id)readApplicationEnabled:(PSSpecifier *)specifier {
     NSString *bundleId = [specifier propertyForKey:@"applicationIdentifier"];
-    if (!bundleId || bundleId.length == 0) return [super readApplicationEnabled:specifier];
+    if (!bundleId || bundleId.length == 0) {
+        return [super readApplicationEnabled:specifier];
+    }
+
     NSString *key = [NSString stringWithFormat:@"%@%@", kGABAppEnabledPrefix, bundleId];
     NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kGABDefaultsDomain];
-    if (![defaults objectForKey:key]) return @(NO);
+    if (![defaults objectForKey:key]) {
+        return @(NO); // 默认关闭
+    }
     return @([defaults boolForKey:key]);
 }
 

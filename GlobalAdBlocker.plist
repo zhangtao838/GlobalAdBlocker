@@ -1,5 +1,7 @@
 {
     Filter = {
-        Mode = "any";
+        Bundles = (
+            "com.apple.UIKit"
+        );
     };
 }
