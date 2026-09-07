@@ -50,8 +50,12 @@ jobs:
           cd /tmp/AltList
           sed -i '' 's/iphone:clang:14.5/iphone:clang:26.5/g' Makefile
           sed -i '' 's/iphone:clang:latest:7.0/iphone:clang:26.5:15.0/g' Makefile
-          echo "ARCHS = arm64 arm64e" >> Makefile
-          make
+          sed -i '' '/^ARCHS/d' Makefile
+          sed -i '' '1i\
+ARCHS = arm64 arm64e
+' Makefile
+          echo "=== Makefile 前10行 ===" && head -10 Makefile
+          make ARCHS="arm64 arm64e"
           cp -r AltList.framework $THEOS/lib/
           echo "AltList installed:"
           ls -la $THEOS/lib/AltList.framework/
