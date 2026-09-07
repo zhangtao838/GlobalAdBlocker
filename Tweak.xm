@@ -161,9 +161,21 @@ static void unmapRules(void) {
     g_rulesMapFailed = NO;  // 重置失败标记，允许重新映射
 }
 
-// 域名拦截检查（懒加载 mmap）
+// 域名拦截检查（懒加载 mmap + 简单缓存）
+#define GAB_CACHE_SIZE 64
+static NSString *g_cacheHosts[GAB_CACHE_SIZE];
+static BOOL g_cacheResults[GAB_CACHE_SIZE];
+static int g_cacheIdx = 0;
+
 static BOOL isDomainBlocked(NSString *host) {
     if (!host || host.length == 0) return NO;
+
+    // 查缓存
+    for (int i = 0; i < GAB_CACHE_SIZE; i++) {
+        if (g_cacheHosts[i] && [g_cacheHosts[i] isEqualToString:host]) {
+            return g_cacheResults[i];
+        }
+    }
 
     // 懒加载：第一次调用时才 mmap
     if (!g_rulesMapped) {
@@ -177,7 +189,17 @@ static BOOL isDomainBlocked(NSString *host) {
     const char *hostCStr = [lowerHost UTF8String];
     size_t hostLen = strlen(hostCStr);
 
-    return gab_rules_match(&g_rulesCtx, hostCStr, hostLen) ? YES : NO;
+    BOOL result = gab_rules_match(&g_rulesCtx, hostCStr, hostLen) ? YES : NO;
+
+    // 写缓存
+    if (g_cacheHosts[g_cacheIdx]) {
+        g_cacheHosts[g_cacheIdx] = nil;
+    }
+    g_cacheHosts[g_cacheIdx] = [host copy];
+    g_cacheResults[g_cacheIdx] = result;
+    g_cacheIdx = (g_cacheIdx + 1) % GAB_CACHE_SIZE;
+
+    return result;
 }
 
 static BOOL isMasterEnabled(void) {
@@ -207,6 +229,11 @@ static NSString *currentAppBundleId(void) {
 // Darwin 通知回调：规则/设置变更时重新映射
 static void settingsChangedCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     GABLog(@"收到设置变更通知，重新映射规则");
+    // 清空域名缓存
+    for (int i = 0; i < GAB_CACHE_SIZE; i++) {
+        g_cacheHosts[i] = nil;
+    }
+    g_cacheIdx = 0;
     unmapRules();
     // 不立即重新 map，等下次拦截请求时懒加载
     // 如果已经映射过（说明这个 app 开启了拦截），立即重新映射

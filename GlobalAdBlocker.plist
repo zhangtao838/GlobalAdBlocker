@@ -1,7 +1,8 @@
 {
     Filter = {
-        Bundles = (
-            "com.apple.UIKit"
+        Any = (
+            { Bundles = ("com.apple.UIKit"); },
+            { Bundles = ("com.apple.Foundation"); }
         );
     };
 }
