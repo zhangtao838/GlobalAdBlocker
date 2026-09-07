@@ -234,13 +234,24 @@ static void __attribute__((constructor)) initialize(void) {
 
 - (void)resume {
     @try {
+        static int logCount = 0;
+        if (logCount < 20) {
+            logCount++;
+            GABLog(@"resume 被调用 (App: %@)", currentAppBundleId());
+        }
+
         if (!isMasterEnabled()) {
+            if (logCount < 20) GABLog(@"主开关关闭，不拦截");
             %orig;
             return;
         }
 
         NSString *bundleId = currentAppBundleId();
-        if (!isAppEnabled(bundleId)) {
+        BOOL appEnabled = isAppEnabled(bundleId);
+        if (logCount < 20) {
+            GABLog(@"App开关: %@ = %@", bundleId, appEnabled ? @"开启" : @"关闭");
+        }
+        if (!appEnabled) {
             %orig;
             return;
         }
@@ -255,6 +266,10 @@ static void __attribute__((constructor)) initialize(void) {
         if (!host) {
             %orig;
             return;
+        }
+
+        if (logCount < 20) {
+            GABLog(@"请求域名: %@", host);
         }
 
         if (isDomainBlocked(host)) {

@@ -40,7 +40,11 @@
     [defaults setObject:enabledNum forKey:key];
     [defaults synchronize];
 
-    GABLog(@"设置 App 开关: %@ = %@", bundleId, enabledNum);
+    GABLog(@"设置 App 开关: key=%@ value=%@ (suite=%@)", key, enabledNum, kGABDefaultsDomain);
+
+    // 验证保存是否成功
+    NSNumber *saved = [defaults objectForKey:key];
+    GABLog(@"验证保存: %@ = %@", key, saved);
 
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                           (CFStringRef)kGABDarwinNotification,
