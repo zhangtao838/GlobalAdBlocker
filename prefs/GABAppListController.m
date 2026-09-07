@@ -11,21 +11,17 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"按 App 管理";
-    GABLog(@"App列表页面加载(AltList v3.2)");
+    GABLog(@"App列表页面加载(AltList v3.3)");
 }
 
-// AltList 加载完成后调用，打印应用数量方便调试
-- (void)didLoadApplications {
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
     @try {
-        [super didLoadApplications];
-    } @catch (NSException *e) {}
-    NSArray *apps = [self valueForKey:@"applications"];
-    GABLog(@"AltList 加载完成，应用数量: %lu", (unsigned long)apps.count);
-}
-
-- (void)reloadApplications {
-    [super reloadApplications];
-    GABLog(@"AltList 重新加载应用列表");
+        NSArray *apps = [self valueForKey:@"applications"];
+        GABLog(@"App列表显示，应用数量: %lu", (unsigned long)apps.count);
+    } @catch (NSException *e) {
+        GABLog(@"获取应用数量失败: %@", e);
+    }
 }
 
 #pragma mark - 开关状态读写（兼容现有存储格式）
