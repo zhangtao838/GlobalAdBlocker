@@ -56,8 +56,10 @@ static NSString *GABResolvePath(NSString *path) {
     // 首次打开时，如果用户空间没有规则文件，从 PreferenceBundle 复制默认规则
     NSFileManager *fm = [NSFileManager defaultManager];
     if (![fm fileExistsAtPath:kGABUserRulesPath]) {
-        // 优先从当前 bundle 读取
-        NSString *bundleRulesPath = [[NSBundle mainBundle] pathForResource:@"rules" ofType:@"bin"];
+        // 用 bundleForClass 获取当前 bundle（mainBundle 是 Preferences.app，不是我们的 bundle）
+        NSBundle *myBundle = [NSBundle bundleForClass:[self class]];
+        NSString *bundleRulesPath = [myBundle pathForResource:@"rules" ofType:@"bin"];
+        GABLog(@"当前 bundle: %@ (rules.bin: %@)", myBundle.bundlePath, bundleRulesPath ? @"存在" : @"不存在");
         if (!bundleRulesPath) {
             // 尝试从 PreferenceBundle 路径读取（用 jbrootpath 转换）
             NSArray *bundlePaths = @[
@@ -97,8 +99,8 @@ static NSString *GABResolvePath(NSString *path) {
     // 2. 越狱空间（用 jbrootpath 转换）
     [paths addObject:GABResolvePath(kGABRulesPath)];
 
-    // 3. bundle 里的默认规则
-    NSString *bundleRulesPath = [[NSBundle mainBundle] pathForResource:@"rules" ofType:@"bin"];
+    // 3. bundle 里的默认规则（用 bundleForClass，不是 mainBundle）
+    NSString *bundleRulesPath = [[NSBundle bundleForClass:[self class]] pathForResource:@"rules" ofType:@"bin"];
     if (bundleRulesPath) [paths addObject:bundleRulesPath];
     [paths addObject:GABResolvePath(@"/Library/PreferenceBundles/GlobalAdBlockerPrefs.bundle/rules.bin")];
 
