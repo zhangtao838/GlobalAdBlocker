@@ -1,0 +1,67 @@
+#!/bin/bash
+# GlobalAdBlocker postinst: 安装时自动导入默认规则到系统 hosts
+
+set -e
+
+HOSTS_FILE="/etc/hosts"
+DEFAULT_RULES="/Library/PreferenceBundles/GlobalAdBlockerPrefs.bundle/default_rules.txt"
+START_MARKER="# === GlobalAdBlocker Start ==="
+END_MARKER="# === GlobalAdBlocker End ==="
+
+echo "[GlobalAdBlocker] 开始安装后配置..."
+
+# 检查默认规则文件是否存在
+if [ ! -f "$DEFAULT_RULES" ]; then
+    echo "[GlobalAdBlocker] 默认规则文件不存在: $DEFAULT_RULES"
+    exit 0
+fi
+
+# 读取现有 hosts，删除旧的标记块
+if [ -f "$HOSTS_FILE" ]; then
+    # 删除标记之间的内容（包括标记本身）
+    sed -i '' "/$START_MARKER/,/$END_MARKER/d" "$HOSTS_FILE" 2>/dev/null || true
+fi
+
+# 确保 hosts 文件以换行结尾
+if [ -f "$HOSTS_FILE" ] && [ -n "$(tail -c1 "$HOSTS_FILE")" ]; then
+    echo "" >> "$HOSTS_FILE"
+fi
+
+# 解析规则并生成 hosts 条目
+echo "$START_MARKER" >> "$HOSTS_FILE"
+echo "# GlobalAdBlocker 广告拦截规则" >> "$HOSTS_FILE"
+
+DOMAIN_COUNT=0
+while IFS= read -r line; do
+    # 跳过空行和注释
+    trimmed=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    if [ -z "$trimmed" ] || [[ "$trimmed" == \#* ]]; then
+        continue
+    fi
+
+    # 解析 Loon 格式: DOMAIN,domain.com 或 DOMAIN-SUFFIX,domain.com
+    rule_type=$(echo "$trimmed" | cut -d',' -f1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    domain=$(echo "$trimmed" | cut -d',' -f2 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')
+
+    if [ -n "$domain" ]; then
+        case "$rule_type" in
+            DOMAIN|DOMAIN-SUFFIX|HOST|HOST-SUFFIX)
+                echo "127.0.0.1 $domain" >> "$HOSTS_FILE"
+                echo "::1 $domain" >> "$HOSTS_FILE"
+                DOMAIN_COUNT=$((DOMAIN_COUNT + 1))
+                ;;
+        esac
+    fi
+done < "$DEFAULT_RULES"
+
+echo "$END_MARKER" >> "$HOSTS_FILE"
+
+echo "[GlobalAdBlocker] 已导入 $DOMAIN_COUNT 条域名规则到 $HOSTS_FILE"
+
+# 刷新 DNS 缓存
+killall -HUP mDNSResponder 2>/dev/null || true
+killall mDNSResponderHelper 2>/dev/null || true
+
+echo "[GlobalAdBlocker] DNS 缓存已刷新，安装完成"
+
+exit 0

@@ -1,0 +1,91 @@
+# GlobalAdBlocker 默认广告拦截规则
+# 格式：DOMAIN,域名 或 DOMAIN-SUFFIX,域名
+# 导入后自动写入系统 hosts 文件，所有 App 生效
+
+# 谷歌广告
+DOMAIN-SUFFIX,googleadservices.com
+DOMAIN-SUFFIX,doubleclick.net
+DOMAIN-SUFFIX,googlesyndication.com
+DOMAIN-SUFFIX,google-analytics.com
+DOMAIN-SUFFIX,googletagmanager.com
+DOMAIN-SUFFIX,googletagservices.com
+DOMAIN-SUFFIX,googleads.g.doubleclick.net
+DOMAIN-SUFFIX,pagead2.googlesyndication.com
+DOMAIN-SUFFIX,www.googleadservices.com
+DOMAIN-SUFFIX,static.googleadservices.com
+
+# 脸书广告
+DOMAIN-SUFFIX,facebook.com
+DOMAIN-SUFFIX,fbcdn.net
+DOMAIN-SUFFIX,facebook.net
+DOMAIN-SUFFIX,fb.com
+
+# 字节跳动/穿山甲广告
+DOMAIN-SUFFIX,pangle.io
+DOMAIN-SUFFIX,bytedance.com
+DOMAIN-SUFFIX,bytecdn.cn
+DOMAIN-SUFFIX,pstatp.com
+DOMAIN-SUFFIX,ixigua.com
+DOMAIN-SUFFIX,douyin.com
+
+# 腾讯优量汇广告
+DOMAIN-SUFFIX,qq.com
+DOMAIN-SUFFIX,tencent.com
+DOMAIN-SUFFIX,gtimg.cn
+DOMAIN-SUFFIX,tencent-cloud.net
+
+# 百度广告
+DOMAIN-SUFFIX,baidu.com
+DOMAIN-SUFFIX,bdstatic.com
+DOMAIN-SUFFIX,bdimg.com
+
+# 阿里妈妈/淘宝广告
+DOMAIN-SUFFIX,alimama.com
+DOMAIN-SUFFIX,taobao.com
+DOMAIN-SUFFIX,tmall.com
+DOMAIN-SUFFIX,alicdn.com
+
+# 美团广告
+DOMAIN-SUFFIX,meituan.com
+DOMAIN-SUFFIX,dianping.com
+
+# 京东广告
+DOMAIN-SUFFIX,jd.com
+DOMAIN-SUFFIX,jdcdn.com
+
+# 拼多多广告
+DOMAIN-SUFFIX,pinduoduo.com
+DOMAIN-SUFFIX,pddpic.com
+
+# 小米广告
+DOMAIN-SUFFIX,mi.com
+DOMAIN-SUFFIX,xiaomi.com
+DOMAIN-SUFFIX,miui.com
+
+# OPPO/vivo 广告
+DOMAIN-SUFFIX,oppo.com
+DOMAIN-SUFFIX,vivo.com.cn
+
+# 华为广告
+DOMAIN-SUFFIX,huawei.com
+DOMAIN-SUFFIX,vmall.com
+
+# 其他常见广告网络
+DOMAIN-SUFFIX,adcolony.com
+DOMAIN-SUFFIX,chartboost.com
+DOMAIN-SUFFIX,unityads.unity3d.com
+DOMAIN-SUFFIX,applovin.com
+DOMAIN-SUFFIX,vungle.com
+DOMAIN-SUFFIX,ironsource.com
+DOMAIN-SUFFIX,mintegral.com
+DOMAIN-SUFFIX,inmobi.com
+DOMAIN-SUFFIX,smartyads.com
+DOMAIN-SUFFIX,advertising.com
+DOMAIN-SUFFIX,adnxs.com
+DOMAIN-SUFFIX,criteo.com
+DOMAIN-SUFFIX,taboola.com
+DOMAIN-SUFFIX,outbrain.com
+DOMAIN-SUFFIX,revcontent.com
+DOMAIN-SUFFIX,content.ad
+DOMAIN-SUFFIX,mgid.com
+DOMAIN-SUFFIX,zergnet.com

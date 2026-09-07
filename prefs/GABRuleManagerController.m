@@ -4,9 +4,8 @@
 #import <dlfcn.h>
 #import <objc/runtime.h>
 #import "GABLog.h"
-#import "GABBinaryRules.h"
 
-// libroot - 动态加载 jbrootpath 函数（避免编译时链接依赖）
+// libroot - 动态加载 jbrootpath 函数
 static NSString *(*GABJBRootPath)(NSString *) = NULL;
 static BOOL GABJBRootPathLoaded = NO;
 
@@ -28,11 +27,6 @@ static void GABLoadJBRootPath(void) {
     }
 }
 
-#define kGABDarwinNotification @"com.globaladblocker.settingsChanged"
-#define kGABRulesPath @"/Library/Application Support/GlobalAdBlocker/rules.bin"
-#define kGABUserRulesPath @"/var/mobile/Documents/GlobalAdBlocker/rules.bin"
-
-// 路径转换工具：优先用户空间，其次用 jbrootpath 转换越狱路径
 static NSString *GABResolvePath(NSString *path) {
     if (!path) return nil;
     if ([path hasPrefix:@"/var/mobile/"]) return path;
@@ -46,132 +40,140 @@ static NSString *GABResolvePath(NSString *path) {
     return path;
 }
 
+#define kGABDarwinNotification @"com.globaladblocker.settingsChanged"
+#define kGABHostsStart @"# === GlobalAdBlocker Start ==="
+#define kGABHostsEnd @"# === GlobalAdBlocker End ==="
+#define kGABDefaultRulesPath @"/Library/PreferenceBundles/GlobalAdBlockerPrefs.bundle/default_rules.txt"
+
 @implementation GABRuleManagerController
 
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"规则管理";
-    GABLog(@"规则管理页面加载(v3.2 二进制规则)");
+    GABLog(@"规则管理页面加载(v4.0 hosts方案)");
 
-    // 首次打开时，如果用户空间没有规则文件，从 PreferenceBundle 复制默认规则
-    NSFileManager *fm = [NSFileManager defaultManager];
-    if (![fm fileExistsAtPath:kGABUserRulesPath]) {
-        // 用 bundleForClass 获取当前 bundle（mainBundle 是 Preferences.app，不是我们的 bundle）
-        NSBundle *myBundle = [NSBundle bundleForClass:[self class]];
-        NSString *bundleRulesPath = [myBundle pathForResource:@"rules" ofType:@"bin"];
-        GABLog(@"当前 bundle: %@ (rules.bin: %@)", myBundle.bundlePath, bundleRulesPath ? @"存在" : @"不存在");
-        if (!bundleRulesPath) {
-            // 尝试从 PreferenceBundle 路径读取（用 jbrootpath 转换）
-            NSArray *bundlePaths = @[
-                GABResolvePath(@"/Library/PreferenceBundles/GlobalAdBlockerPrefs.bundle/rules.bin"),
-                GABResolvePath(kGABRulesPath)
-            ];
-            for (NSString *path in bundlePaths) {
-                if ([fm fileExistsAtPath:path]) {
-                    bundleRulesPath = path;
-                    break;
-                }
-            }
+    // 首次打开时，如果 hosts 里没有我们的标记，自动导入默认规则
+    NSString *hostsPath = GABResolvePath(@"/etc/hosts");
+    NSString *hostsContent = [NSString stringWithContentsOfFile:hostsPath encoding:NSUTF8StringEncoding error:nil];
+    if (!hostsContent || ![hostsContent containsString:kGABHostsStart]) {
+        GABLog(@"hosts 中无 GlobalAdBlocker 标记，尝试自动导入默认规则");
+        NSString *defaultRulesPath = GABResolvePath(kGABDefaultRulesPath);
+        if (![[NSFileManager defaultManager] fileExistsAtPath:defaultRulesPath]) {
+            defaultRulesPath = [[NSBundle bundleForClass:[self class]] pathForResource:@"default_rules" ofType:@"json"];
         }
-
-        GABLog(@"Bundle 规则路径: %@ (存在: %@)", bundleRulesPath, bundleRulesPath ? @"是" : @"否");
-
-        if (bundleRulesPath && [fm fileExistsAtPath:bundleRulesPath]) {
-            [fm createDirectoryAtPath:[kGABUserRulesPath stringByDeletingLastPathComponent] withIntermediateDirectories:YES attributes:nil error:nil];
-            BOOL copied = [fm copyItemAtPath:bundleRulesPath toPath:kGABUserRulesPath error:nil];
-            GABLog(@"自动复制默认规则到用户空间: %@ -> %@ (%@)", bundleRulesPath, kGABUserRulesPath, copied ? @"成功" : @"失败");
-        } else {
-            GABLog(@"未找到 bundle 中的默认规则文件");
+        GABLog(@"默认规则路径: %@ (存在: %@)", defaultRulesPath, defaultRulesPath ? @"是" : @"否");
+        if (defaultRulesPath && [[NSFileManager defaultManager] fileExistsAtPath:defaultRulesPath]) {
+            [self importRulesFromJSONFile:[NSURL fileURLWithPath:defaultRulesPath] silent:YES];
         }
     }
 
     [self loadRuleCounts];
 }
 
-// 查找规则文件（优先用户空间，其次 bundle，最后越狱空间用 jbrootpath 转换）
-- (NSString *)findRulesFile {
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSMutableArray *paths = [NSMutableArray array];
+#pragma mark - hosts 文件操作
 
-    // 1. 用户空间（最高优先级，用户导入的规则）
-    [paths addObject:kGABUserRulesPath];
+- (NSString *)hostsPath {
+    return GABResolvePath(@"/etc/hosts");
+}
 
-    // 2. 越狱空间（用 jbrootpath 转换）
-    [paths addObject:GABResolvePath(kGABRulesPath)];
+// 读取 hosts，返回标记之外的内容和标记内的域名集合
+- (void)parseHosts:(NSString **)outCleanContent domains:(NSMutableSet **)outDomains {
+    NSString *hostsPath = [self hostsPath];
+    NSString *content = [NSString stringWithContentsOfFile:hostsPath encoding:NSUTF8StringEncoding error:nil];
+    if (!content) content = @"";
 
-    // 3. bundle 里的默认规则（用 bundleForClass，不是 mainBundle）
-    NSString *bundleRulesPath = [[NSBundle bundleForClass:[self class]] pathForResource:@"rules" ofType:@"bin"];
-    if (bundleRulesPath) [paths addObject:bundleRulesPath];
-    [paths addObject:GABResolvePath(@"/Library/PreferenceBundles/GlobalAdBlockerPrefs.bundle/rules.bin")];
+    NSMutableArray *cleanLines = [NSMutableArray array];
+    NSMutableSet *domains = [NSMutableSet set];
+    BOOL inBlock = NO;
+    NSArray *lines = [content componentsSeparatedByString:@"\n"];
 
-    for (NSString *path in paths) {
-        if (path && [fm fileExistsAtPath:path]) {
-            return path;
+    for (NSString *line in lines) {
+        NSString *trimmed = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if ([trimmed isEqualToString:kGABHostsStart]) {
+            inBlock = YES;
+            continue;
+        }
+        if ([trimmed isEqualToString:kGABHostsEnd]) {
+            inBlock = NO;
+            continue;
+        }
+        if (inBlock) {
+            // 解析域名：127.0.0.1 domain.com 或 ::1 domain.com
+            NSArray *parts = [trimmed componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+            if (parts.count >= 2) {
+                NSString *domain = parts[1];
+                if (domain.length > 0 && ![domain hasPrefix:@"#"]) {
+                    [domains addObject:domain];
+                }
+            }
+        } else {
+            [cleanLines addObject:line];
         }
     }
-    return nil;
+
+    if (outCleanContent) *outCleanContent = [cleanLines componentsJoinedByString:@"\n"];
+    if (outDomains) *outDomains = domains;
 }
+
+// 写入 hosts：干净内容 + 标记 + 域名
+- (BOOL)writeHostsWithDomains:(NSSet *)domains cleanContent:(NSString *)cleanContent {
+    NSMutableString *newContent = [NSMutableString stringWithString:cleanContent];
+    if (![newContent hasSuffix:@"\n"]) [newContent appendString:@"\n"];
+    [newContent appendString:kGABHostsStart];
+    [newContent appendString:@"\n"];
+    [newContent appendString:@"# GlobalAdBlocker 广告拦截规则 (共 "];
+    [newContent appendFormat:@"%lu", (unsigned long)domains.count];
+    [newContent appendString:@" 条域名)\n"];
+    for (NSString *domain in [domains allObjects]) {
+        [newContent appendFormat:@"127.0.0.1 %@\n", domain];
+        [newContent appendFormat:@"::1 %@\n", domain];
+    }
+    [newContent appendString:kGABHostsEnd];
+    [newContent appendString:@"\n"];
+
+    NSError *error = nil;
+    BOOL success = [newContent writeToFile:[self hostsPath] atomically:YES encoding:NSUTF8StringEncoding error:&error];
+    GABLog(@"写入 hosts: %@ (%lu 条域名) %@", success ? @"成功" : @"失败", (unsigned long)domains.count, error ?: @"");
+    return success;
+}
+
+// 刷新 DNS 缓存
+- (void)flushDNSCache {
+    // 用 system 调用 killall，越狱环境下可用
+    system("killall -HUP mDNSResponder 2>/dev/null");
+    system("killall mDNSResponderHelper 2>/dev/null");
+    GABLog(@"已刷新 DNS 缓存");
+}
+
+#pragma mark - 规则统计
 
 - (void)loadRuleCounts {
-    NSString *rulesPath = [self findRulesFile];
-    GABLog(@"规则文件路径: %@ (存在: %@)", rulesPath ?: @"未找到", rulesPath ? @"是" : @"否");
+    NSString *cleanContent = nil;
+    NSMutableSet *domains = nil;
+    [self parseHosts:&cleanContent domains:&domains];
 
-    if (!rulesPath) {
-        self.exactCount = 0;
-        self.suffixCount = 0;
-        GABLog(@"规则文件不存在");
-        return;
-    }
-
-    // 从二进制文件头读取规则数量
-    NSData *data = [NSData dataWithContentsOfFile:rulesPath];
-    if (!data || data.length < sizeof(gab_rules_header_t)) {
-        GABLog(@"规则文件太小或读取失败: %@", rulesPath);
-        self.exactCount = 0;
-        self.suffixCount = 0;
-        return;
-    }
-
-    const gab_rules_header_t *header = (const gab_rules_header_t *)data.bytes;
-    if (header->magic != GAB_RULES_MAGIC) {
-        GABLog(@"规则文件魔数错误: 0x%08X (期望 0x%08X)", header->magic, GAB_RULES_MAGIC);
-        self.exactCount = 0;
-        self.suffixCount = 0;
-        return;
-    }
-
-    self.exactCount = header->exact_count;
-    self.suffixCount = header->suffix_count;
-    GABLog(@"规则加载完成: 精确 %u, 后缀 %u (版本 %u)", header->exact_count, header->suffix_count, header->version);
+    self.exactCount = domains.count;
+    self.suffixCount = 0; // hosts 方案不区分精确/后缀，统一统计
+    GABLog(@"规则统计: hosts 中共 %lu 条拦截域名", (unsigned long)domains.count);
 }
+
+#pragma mark - Specifiers
 
 - (NSArray *)specifiers {
     if (!_specifiers) {
         NSMutableArray *specs = [NSMutableArray array];
 
-        // 当前规则
         [specs addObject:[PSSpecifier preferenceSpecifierNamed:@"当前规则" target:self set:Nil get:Nil detail:Nil cell:PSGroupCell edit:Nil]];
 
-        PSSpecifier *exactSpec = [PSSpecifier preferenceSpecifierNamed:@"精确匹配" target:self set:Nil get:@selector(exactCountString) detail:Nil cell:PSTitleValueCell edit:Nil];
+        PSSpecifier *exactSpec = [PSSpecifier preferenceSpecifierNamed:@"拦截域名" target:self set:Nil get:@selector(exactCountString) detail:Nil cell:PSTitleValueCell edit:Nil];
         [specs addObject:exactSpec];
 
-        PSSpecifier *suffixSpec = [PSSpecifier preferenceSpecifierNamed:@"后缀匹配" target:self set:Nil get:@selector(suffixCountString) detail:Nil cell:PSTitleValueCell edit:Nil];
-        [specs addObject:suffixSpec];
-
-        // 规则文件位置
-        [specs addObject:[PSSpecifier preferenceSpecifierNamed:@"规则文件" target:self set:Nil get:Nil detail:Nil cell:PSGroupCell edit:Nil]];
-
-        PSSpecifier *pathSpec = [PSSpecifier preferenceSpecifierNamed:kGABRulesPath target:self set:Nil get:Nil detail:Nil cell:PSTitleValueCell edit:Nil];
-        [specs addObject:pathSpec];
-
         PSSpecifier *pathHint = [PSSpecifier preferenceSpecifierNamed:@"说明" target:self set:Nil get:Nil detail:Nil cell:PSGroupCell edit:Nil];
-        [pathHint setProperty:@"可用 Filza 直接替换此二进制规则文件，或在下方导入 Loon 规则自动编译。替换后点击「重新加载规则」立即生效。" forKey:@"footerText"];
+        [pathHint setProperty:@"通过修改系统 hosts 文件拦截广告域名，所有 App 生效（包括 WebView 广告）。导入 Loon 格式规则自动生成 hosts，无需注销立即生效。" forKey:@"footerText"];
         [specs addObject:pathHint];
 
-        // 操作
         [specs addObject:[PSSpecifier preferenceSpecifierNamed:@"操作" target:self set:Nil get:Nil detail:Nil cell:PSGroupCell edit:Nil]];
 
-        // 用自定义按钮 cell（PSButtonCell 在 RootHide 下无响应，改用 UIButton）
         PSSpecifier *importSpec = [PSSpecifier preferenceSpecifierNamed:@"" target:self set:Nil get:Nil detail:Nil cell:PSGroupCell edit:Nil];
         [importSpec setProperty:@"从文件导入（Loon 格式）" forKey:@"buttonTitle"];
         [importSpec setProperty:@"importRulesTapped" forKey:@"buttonAction"];
@@ -193,15 +195,18 @@ static NSString *GABResolvePath(NSString *path) {
 }
 
 - (NSString *)exactCountString {
-    return [NSString stringWithFormat:@"%u 条", (unsigned)self.exactCount];
+    return [NSString stringWithFormat:@"%lu 条", (unsigned long)self.exactCount];
 }
 
 - (NSString *)suffixCountString {
-    return [NSString stringWithFormat:@"%u 条", (unsigned)self.suffixCount];
+    return [NSString stringWithFormat:@"%lu 条", (unsigned long)self.suffixCount];
 }
+
+#pragma mark - 按钮操作
 
 - (void)reloadRules:(PSSpecifier *)specifier {
     GABLog(@"手动重新加载规则");
+    [self flushDNSCache];
     [self loadRuleCounts];
     _specifiers = nil;
     [self reloadSpecifiers];
@@ -210,19 +215,21 @@ static NSString *GABResolvePath(NSString *path) {
                                           (CFStringRef)kGABDarwinNotification,
                                           NULL, NULL, true);
 
-    [self showAlert:@"已重新加载" message:[NSString stringWithFormat:@"精确 %u 条，后缀 %u 条，所有 App 进程已立即重新映射", (unsigned)self.exactCount, (unsigned)self.suffixCount]];
+    [self showAlert:@"已重新加载" message:[NSString stringWithFormat:@"共 %lu 条拦截域名，DNS 缓存已刷新", (unsigned long)self.exactCount]];
 }
 
 - (void)clearRules:(PSSpecifier *)specifier {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"清空规则"
-                                                                     message:@"确定删除所有规则吗？删除后将不会拦截任何广告，可重新导入 Loon 规则。"
+                                                                     message:@"确定删除所有广告拦截规则吗？删除后将不会拦截任何广告。"
                                                               preferredStyle:UIAlertControllerStyleAlert];
 
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"确定清空" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
-        NSFileManager *fm = [NSFileManager defaultManager];
-        [fm removeItemAtPath:kGABUserRulesPath error:nil];
-        [fm removeItemAtPath:GABResolvePath(kGABRulesPath) error:nil];
+        NSString *cleanContent = nil;
+        NSMutableSet *domains = nil;
+        [self parseHosts:&cleanContent domains:&domains];
+        [self writeHostsWithDomains:[NSSet set] cleanContent:cleanContent];
+        [self flushDNSCache];
 
         CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                               (CFStringRef)kGABDarwinNotification,
@@ -231,7 +238,7 @@ static NSString *GABResolvePath(NSString *path) {
         _specifiers = nil;
         [self reloadSpecifiers];
         GABLog(@"已清空规则");
-        [self showAlert:@"已清空" message:@"规则已清空，可导入 Loon 规则重新添加"];
+        [self showAlert:@"已清空" message:@"所有广告拦截规则已删除，DNS 缓存已刷新"];
     }]];
 
     [self presentViewController:alert animated:YES completion:nil];
@@ -242,13 +249,11 @@ static NSString *GABResolvePath(NSString *path) {
 
     UIDocumentPickerViewController *picker = nil;
     @try {
-        picker = [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.text", @"public.data", @"com.apple.property-list"] inMode:UIDocumentPickerModeImport];
+        picker = [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.text", @"public.json", @"public.data"] inMode:UIDocumentPickerModeImport];
         picker.delegate = self;
         picker.allowsMultipleSelection = NO;
     } @catch (NSException *e) {
-        GABLog(@"创建 DocumentPicker 失败: %@", e);
-        [self showAlert:@"导入失败" message:@"无法创建文件选择器，请检查系统版本"];
-        return;
+        GABLog(@"创建文件选择器失败: %@", e);
     }
 
     if (!picker) {
@@ -265,38 +270,17 @@ static NSString *GABResolvePath(NSString *path) {
 
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     if (urls.count == 0) return;
-    [self importRulesFromFile:urls[0]];
+    [self importRulesFromJSONFile:urls[0] silent:NO];
 }
 
 - (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
     GABLog(@"用户取消了文件选择");
 }
 
-#pragma mark - Loon 规则解析 + 二进制编译
+#pragma mark - Loon 规则解析 + hosts 生成
 
-// FNV-1a 哈希（与 C 端一致）
-static uint32_t gab_hash_c(const char *str, size_t len) {
-    uint32_t hash = 2166136261u;
-    for (size_t i = 0; i < len; i++) {
-        hash ^= (uint8_t)str[i];
-        hash *= 16777619u;
-    }
-    return hash;
-}
-
-static uint32_t next_power_of_2(uint32_t n) {
-    if (n == 0) return 1;
-    n--;
-    n |= n >> 1;
-    n |= n >> 2;
-    n |= n >> 4;
-    n |= n >> 8;
-    n |= n >> 16;
-    return n + 1;
-}
-
-- (void)importRulesFromFile:(NSURL *)fileURL {
-    GABLog(@"开始导入文件: %@", fileURL);
+- (void)importRulesFromJSONFile:(NSURL *)fileURL silent:(BOOL)silent {
+    GABLog(@"开始导入文件: %@ (silent=%d)", fileURL, silent);
 
     NSError *error = nil;
     NSString *content = [NSString stringWithContentsOfURL:fileURL encoding:NSUTF8StringEncoding error:&error];
@@ -306,16 +290,14 @@ static uint32_t next_power_of_2(uint32_t n) {
     }
 
     if (!content) {
-        [self showAlert:@"导入失败" message:@"无法读取文件内容"];
+        if (!silent) [self showAlert:@"导入失败" message:@"无法读取文件内容"];
         return;
     }
 
     GABLog(@"文件内容长度: %lu", (unsigned long)content.length);
 
-    // 解析 Loon 规则
-    NSMutableSet *exactDomains = [NSMutableSet set];
-    NSMutableSet *suffixDomains = [NSMutableSet set];
-
+    // 解析 Loon 规则（支持 DOMAIN 和 DOMAIN-SUFFIX，都加入 hosts）
+    NSMutableSet *domains = [NSMutableSet set];
     NSArray *lines = [content componentsSeparatedByString:@"\n"];
     GABLog(@"文件行数: %lu", (unsigned long)lines.count);
 
@@ -330,51 +312,35 @@ static uint32_t next_power_of_2(uint32_t n) {
         NSString *domain = [[parts[1] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] lowercaseString];
         if (domain.length == 0) continue;
 
-        if ([ruleType isEqualToString:@"DOMAIN"]) {
-            [exactDomains addObject:domain];
-        } else if ([ruleType isEqualToString:@"DOMAIN-SUFFIX"] || [ruleType isEqualToString:@"DOMAIN-KEYWORD"]) {
-            [suffixDomains addObject:domain];
+        if ([ruleType isEqualToString:@"DOMAIN"] ||
+            [ruleType isEqualToString:@"DOMAIN-SUFFIX"] ||
+            [ruleType isEqualToString:@"HOST"] ||
+            [ruleType isEqualToString:@"HOST-SUFFIX"]) {
+            [domains addObject:domain];
         }
     }
 
-    GABLog(@"解析完成: 精确 %lu, 后缀 %lu", (unsigned long)exactDomains.count, (unsigned long)suffixDomains.count);
+    GABLog(@"解析完成: 共 %lu 条域名", (unsigned long)domains.count);
 
-    if (exactDomains.count == 0 && suffixDomains.count == 0) {
-        [self showAlert:@"导入失败" message:@"未找到有效规则，请确认是 Loon 格式（DOMAIN 或 DOMAIN-SUFFIX 开头）"];
+    if (domains.count == 0) {
+        if (!silent) [self showAlert:@"导入失败" message:@"未找到有效的域名规则（支持 DOMAIN、DOMAIN-SUFFIX、HOST、HOST-SUFFIX）"];
         return;
     }
 
-    // 编译成二进制格式
-    NSData *binaryData = [self compileBinaryRulesWithExact:exactDomains suffix:suffixDomains];
-    if (!binaryData) {
-        [self showAlert:@"导入失败" message:@"规则编译失败"];
+    // 读取现有 hosts，保留干净内容，替换我们的标记块
+    NSString *cleanContent = nil;
+    NSMutableSet *existingDomains = nil;
+    [self parseHosts:&cleanContent domains:&existingDomains];
+
+    // 合并现有域名和新域名（如果是导入新规则，替换而不是合并）
+    // 这里选择替换：导入新规则时完全替换旧规则
+    BOOL success = [self writeHostsWithDomains:domains cleanContent:cleanContent];
+    if (!success) {
+        if (!silent) [self showAlert:@"导入失败" message:@"无法写入 /etc/hosts 文件，请检查权限"];
         return;
     }
 
-    GABLog(@"二进制规则编译完成: %lu bytes", (unsigned long)binaryData.length);
-
-    // 保存到文件（优先用户空间，设置进程能写入）
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSArray *savePaths = @[
-        kGABUserRulesPath,
-        GABResolvePath(kGABRulesPath)
-    ];
-
-    NSString *savedPath = nil;
-    for (NSString *savePath in savePaths) {
-        [fm createDirectoryAtPath:[savePath stringByDeletingLastPathComponent] withIntermediateDirectories:YES attributes:nil error:nil];
-        BOOL saved = [binaryData writeToFile:savePath atomically:YES];
-        GABLog(@"保存到 %@: %@", savePath, saved ? @"成功" : @"失败");
-        if (saved) {
-            savedPath = savePath;
-            break;
-        }
-    }
-
-    if (!savedPath) {
-        [self showAlert:@"导入失败" message:@"无法保存规则文件，请检查权限"];
-        return;
-    }
+    [self flushDNSCache];
 
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                           (CFStringRef)kGABDarwinNotification,
@@ -384,173 +350,19 @@ static uint32_t next_power_of_2(uint32_t n) {
     _specifiers = nil;
     [self reloadSpecifiers];
 
-    GABLog(@"导入成功");
-    [self showAlert:@"导入成功"
-             message:[NSString stringWithFormat:@"共导入 %lu 条规则（精确 %lu 条，后缀 %lu 条），已编译为二进制格式并立即生效。\n规则文件: %@",
-                      (unsigned long)(exactDomains.count + suffixDomains.count),
-                      (unsigned long)exactDomains.count,
-                      (unsigned long)suffixDomains.count,
-                      savedPath]];
+    GABLog(@"导入成功: %lu 条域名", (unsigned long)domains.count);
+    if (!silent) {
+        [self showAlert:@"导入成功"
+                 message:[NSString stringWithFormat:@"共导入 %lu 条域名规则，已写入系统 hosts 文件并刷新 DNS 缓存，所有 App 立即生效。",
+                          (unsigned long)domains.count]];
+    }
 }
 
-// 编译规则为二进制格式
-- (NSData *)compileBinaryRulesWithExact:(NSSet *)exactSet suffix:(NSSet *)suffixSet {
-    NSArray *exactDomains = [[exactSet allObjects] sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
-    NSArray *suffixDomains = [[suffixSet allObjects] sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
-
-    uint32_t exactCount = (uint32_t)exactDomains.count;
-    uint32_t suffixCount = (uint32_t)suffixDomains.count;
-
-    // 1. 构建字符串池（偏移0保留给空槽标记）
-    NSMutableData *stringPool = [NSMutableData dataWithBytes:"\x00" length:1];
-    NSMutableDictionary *domainOffsets = [NSMutableDictionary dictionary];
-
-    for (NSString *domain in exactDomains) {
-        if (domainOffsets[domain]) continue;
-        NSData *domainData = [domain dataUsingEncoding:NSUTF8StringEncoding];
-        uint8_t nullByte = 0;
-        [stringPool appendData:domainData];
-        [stringPool appendBytes:&nullByte length:1];
-        domainOffsets[domain] = @(stringPool.length - domainData.length - 1);
-    }
-    for (NSString *domain in suffixDomains) {
-        if (domainOffsets[domain]) continue;
-        NSData *domainData = [domain dataUsingEncoding:NSUTF8StringEncoding];
-        uint8_t nullByte = 0;
-        [stringPool appendData:domainData];
-        [stringPool appendBytes:&nullByte length:1];
-        domainOffsets[domain] = @(stringPool.length - domainData.length - 1);
-    }
-
-    uint32_t stringPoolSize = (uint32_t)stringPool.length;
-
-    // 2. 构建精确匹配哈希表（开放寻址法）
-    uint32_t exactHashSize = (exactCount > 0) ? next_power_of_2(exactCount * 2) : 1;
-    NSMutableData *exactTable = [NSMutableData dataWithLength:exactHashSize * sizeof(gab_exact_entry_t)];
-    gab_exact_entry_t *exactEntries = (gab_exact_entry_t *)exactTable.mutableBytes;
-
-    for (NSString *domain in exactDomains) {
-        const char *domainCStr = [domain UTF8String];
-        size_t domainLen = strlen(domainCStr);
-        uint32_t hash = gab_hash_c(domainCStr, domainLen);
-        uint32_t mask = exactHashSize - 1;
-        uint32_t idx = hash & mask;
-        uint32_t strOffset = [domainOffsets[domain] unsignedIntValue];
-
-        while (exactEntries[idx].str_offset != 0) {
-            idx = (idx + 1) & mask;
-        }
-        exactEntries[idx].hash = hash;
-        exactEntries[idx].str_offset = strOffset;
-    }
-
-    // 3. 构建后缀匹配数组（按最后一个字节分桶）
-    NSMutableArray *buckets = [NSMutableArray arrayWithCapacity:GAB_BUCKET_COUNT];
-    for (int i = 0; i < GAB_BUCKET_COUNT; i++) {
-        [buckets addObject:[NSMutableArray array]];
-    }
-
-    for (NSString *domain in suffixDomains) {
-        const char *domainCStr = [domain UTF8String];
-        size_t domainLen = strlen(domainCStr);
-        uint8_t lastByte = (uint8_t)domainCStr[domainLen - 1];
-        [buckets[lastByte] addObject:domain];
-    }
-
-    // 每个桶内排序
-    for (int i = 0; i < GAB_BUCKET_COUNT; i++) {
-        buckets[i] = [buckets[i] sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
-    }
-
-    // 计算桶偏移
-    uint32_t bucketOffsets[GAB_BUCKET_COUNT];
-    uint32_t bucketCounts[GAB_BUCKET_COUNT];
-    uint32_t currentOffset = 0;
-    for (int i = 0; i < GAB_BUCKET_COUNT; i++) {
-        bucketOffsets[i] = currentOffset;
-        bucketCounts[i] = (uint32_t)[buckets[i] count];
-        currentOffset += bucketCounts[i];
-    }
-
-    // 构建后缀数组
-    NSMutableData *suffixArray = [NSMutableData dataWithLength:suffixCount * sizeof(gab_suffix_entry_t)];
-    gab_suffix_entry_t *suffixEntries = (gab_suffix_entry_t *)suffixArray.mutableBytes;
-    uint32_t suffixIdx = 0;
-    for (int i = 0; i < GAB_BUCKET_COUNT; i++) {
-        for (NSString *domain in buckets[i]) {
-            const char *domainCStr = [domain UTF8String];
-            suffixEntries[suffixIdx].length = (uint16_t)strlen(domainCStr);
-            suffixEntries[suffixIdx].str_offset = [domainOffsets[domain] unsignedIntValue];
-            suffixIdx++;
-        }
-    }
-
-    // 4. 计算各部分偏移
-    uint32_t headerSize = (uint32_t)sizeof(gab_rules_header_t);
-    uint32_t exactHashOffset = headerSize;
-    uint32_t suffixArrayOffset = exactHashOffset + exactHashSize * (uint32_t)sizeof(gab_exact_entry_t);
-    uint32_t stringPoolOffset = suffixArrayOffset + suffixCount * (uint32_t)sizeof(gab_suffix_entry_t);
-
-    // 对齐到4字节
-    if (stringPoolOffset % 4 != 0) {
-        stringPoolOffset += 4 - (stringPoolOffset % 4);
-    }
-
-    uint32_t totalSize = stringPoolOffset + stringPoolSize;
-
-    GABLog(@"二进制编译: header=%u exactTable=%u(%u槽) suffixArray=%u stringPool=%u total=%u",
-          headerSize, exactHashSize * (uint32_t)sizeof(gab_exact_entry_t), exactHashSize,
-          suffixCount * (uint32_t)sizeof(gab_suffix_entry_t), stringPoolSize, totalSize);
-
-    // 5. 组装二进制文件
-    NSMutableData *binary = [NSMutableData dataWithCapacity:totalSize];
-
-    // 文件头
-    gab_rules_header_t header;
-    memset(&header, 0, sizeof(header));
-    header.magic = GAB_RULES_MAGIC;
-    header.version = GAB_RULES_VERSION;
-    header.exact_count = exactCount;
-    header.suffix_count = suffixCount;
-    header.exact_hash_size = exactHashSize;
-    header.exact_hash_offset = exactHashOffset;
-    header.suffix_array_offset = suffixArrayOffset;
-    header.string_pool_offset = stringPoolOffset;
-    header.string_pool_size = stringPoolSize;
-    memcpy(header.bucket_offsets, bucketOffsets, sizeof(bucketOffsets));
-    memcpy(header.bucket_counts, bucketCounts, sizeof(bucketCounts));
-    [binary appendBytes:&header length:sizeof(header)];
-
-    // 精确匹配哈希表
-    [binary appendData:exactTable];
-
-    // 后缀匹配数组
-    [binary appendData:suffixArray];
-
-    // 对齐填充
-    while (binary.length < stringPoolOffset) {
-        uint8_t zero = 0;
-        [binary appendBytes:&zero length:1];
-    }
-
-    // 字符串池
-    [binary appendData:stringPool];
-
-    return binary;
-}
-
-- (void)showAlert:(NSString *)title message:(NSString *)message {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
-}
-
-#pragma mark - 自定义按钮 cell（PSButtonCell 在 RootHide 下无响应，改用 UIButton）
+#pragma mark - 自定义按钮 cell
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [super tableView:tableView cellForRowAtIndexPath:indexPath];
 
-    // 从 specifiers 数组获取当前 specifier
     NSArray *specs = [self specifiers];
     if (indexPath.row >= (NSInteger)specs.count) return cell;
     PSSpecifier *specifier = specs[indexPath.row];
@@ -558,12 +370,10 @@ static uint32_t next_power_of_2(uint32_t n) {
     NSString *buttonTitle = [specifier propertyForKey:@"buttonTitle"];
 
     if (buttonAction && buttonTitle) {
-        // 清除 cell 里的默认内容
         for (UIView *subview in cell.contentView.subviews) {
             [subview removeFromSuperview];
         }
 
-        // 创建自定义按钮
         UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
         button.frame = CGRectMake(15, 8, cell.contentView.bounds.size.width - 30, 36);
         button.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -574,7 +384,6 @@ static uint32_t next_power_of_2(uint32_t n) {
         button.layer.cornerRadius = 8;
         button.clipsToBounds = YES;
 
-        // 用关联对象把 action 名存到按钮上
         objc_setAssociatedObject(button, "buttonAction", buttonAction, OBJC_ASSOCIATION_COPY_NONATOMIC);
         [button addTarget:self action:@selector(handleButtonTap:) forControlEvents:UIControlEventTouchUpInside];
 
@@ -593,7 +402,6 @@ static uint32_t next_power_of_2(uint32_t n) {
 
     SEL action = NSSelectorFromString(actionName);
     if ([self respondsToSelector:action]) {
-        // 取消按钮高亮
         sender.highlighted = NO;
         [self performSelector:action withObject:nil afterDelay:0.0];
     } else {
@@ -601,7 +409,6 @@ static uint32_t next_power_of_2(uint32_t n) {
     }
 }
 
-// 按钮点击包装方法（调用原来的逻辑）
 - (void)importRulesTapped {
     GABLog(@"导入规则按钮被点击");
     [self importRules:nil];
@@ -615,6 +422,14 @@ static uint32_t next_power_of_2(uint32_t n) {
 - (void)clearRulesTapped {
     GABLog(@"清空规则按钮被点击");
     [self clearRules:nil];
+}
+
+#pragma mark - 工具
+
+- (void)showAlert:(NSString *)title message:(NSString *)message {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 @end
