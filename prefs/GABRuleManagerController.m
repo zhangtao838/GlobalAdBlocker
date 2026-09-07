@@ -45,6 +45,18 @@ static NSString *GABResolvePath(NSString *path) {
 #define kGABHostsEnd @"# === GlobalAdBlocker End ==="
 #define kGABDefaultRulesPath @"/Library/PreferenceBundles/GlobalAdBlockerPrefs.bundle/default_rules.txt"
 
+// iOS SDK 26.5 上 system 被标记为不可用，用 dlsym 动态加载
+static int (*GABSystem)(const char *) = NULL;
+
+static void GABRunCommand(const char *cmd) {
+    if (!GABSystem) {
+        GABSystem = (int (*)(const char *))dlsym(RTLD_DEFAULT, "system");
+    }
+    if (GABSystem) {
+        GABSystem(cmd);
+    }
+}
+
 @implementation GABRuleManagerController
 
 - (void)viewDidLoad {
@@ -139,9 +151,9 @@ static NSString *GABResolvePath(NSString *path) {
 
 // 刷新 DNS 缓存
 - (void)flushDNSCache {
-    // 用 system 调用 killall，越狱环境下可用
-    system("killall -HUP mDNSResponder 2>/dev/null");
-    system("killall mDNSResponderHelper 2>/dev/null");
+    // 用 dlsym 动态加载的 system 执行 killall，越狱环境下可用
+    GABRunCommand("killall -HUP mDNSResponder 2>/dev/null");
+    GABRunCommand("killall mDNSResponderHelper 2>/dev/null");
     GABLog(@"已刷新 DNS 缓存");
 }
 
