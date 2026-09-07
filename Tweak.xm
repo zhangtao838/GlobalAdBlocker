@@ -1,133 +1,128 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <notify.h>
+#import <sys/mman.h>
+#import <sys/stat.h>
+#import <fcntl.h>
+#import <unistd.h>
 #import "GABLog.h"
+#import "GABBinaryRules.h"
 
 #define kGABDefaultsDomain @"com.globaladblocker.settings"
 #define kGABAppEnabledPrefix @"GABAppEnabled_"
 #define kGABDarwinNotification @"com.globaladblocker.settingsChanged"
 #define kGABMasterSwitchKey @"GABMasterEnabled"
 
-// Tweak 主体：注入器自动映射 /var/jb/ 前缀 → 真实路径
-#define kGABDefaultRulesPath @"/var/jb/Library/PreferenceBundles/GlobalAdBlockerPrefs.bundle/default_rules.json"
-// 自定义规则放 jb 外（user 空间），prefs 写入也能读到
-#define kGABCustomRulesPath @"/var/mobile/Documents/GlobalAdBlocker/custom_rules.json"
+#define kGABRulesPath @"/Library/Application Support/GlobalAdBlocker/rules.bin"
 
-static NSSet *g_exactDomains = nil;
-static NSSet *g_suffixDomains = nil;
-static BOOL g_rulesLoaded = NO;
+static gab_rules_ctx_t g_rulesCtx;
+static void *g_rulesMmapAddr = NULL;
+static size_t g_rulesMmapSize = 0;
+static int g_rulesMmapFd = -1;
+static BOOL g_rulesMapped = NO;
+static BOOL g_rulesMapFailed = NO;
 
-// 省电：把 NSUserDefaults 缓存到内存，拦截器每次只查哈希，不读文件
-static BOOL g_masterEnabledCache = YES;
-static NSMutableSet *g_appEnabledCache = nil;
-
-static void loadRules(void) {
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *rulesPath = nil;
-
-    // 优先：自定义规则（Loon 格式，用户导入）
-    if ([fm fileExistsAtPath:kGABCustomRulesPath]) {
-        rulesPath = kGABCustomRulesPath;
-        GABLog(@"使用自定义规则");
-    }
-
-    // 其次：默认规则（deb 自带）
-    if (!rulesPath) {
-        if ([fm fileExistsAtPath:kGABDefaultRulesPath]) {
-            rulesPath = kGABDefaultRulesPath;
-            GABLog(@"使用默认规则");
-        } else {
-            // 兼容 prefs 进程视图（无 /var/jb/ 前缀）
-            NSString *userPath = @"/Library/PreferenceBundles/GlobalAdBlockerPrefs.bundle/default_rules.json";
-            if ([fm fileExistsAtPath:userPath]) {
-                rulesPath = userPath;
-                GABLog(@"使用默认规则(prefs路径)");
-            }
+static int openRulesFile(const char **outPath) {
+    const char *paths[] = {
+        [kGABRulesPath fileSystemRepresentation],
+        [[@"/var/jb" stringByAppendingString:kGABRulesPath] fileSystemRepresentation],
+        NULL
+    };
+    for (int i = 0; paths[i] != NULL; i++) {
+        int fd = open(paths[i], O_RDONLY);
+        if (fd >= 0) {
+            if (outPath) *outPath = paths[i];
+            return fd;
         }
     }
+    return -1;
+}
 
-    if (!rulesPath) {
-        GABLog(@"未找到规则文件，拦截失效");
-        g_exactDomains = [NSSet set];
-        g_suffixDomains = [NSSet set];
-        g_rulesLoaded = YES;
-        return;
+static BOOL mapRules(void) {
+    if (g_rulesMapped) return YES;
+    if (g_rulesMapFailed) return NO;
+
+    const char *path = NULL;
+    int fd = openRulesFile(&path);
+    if (fd < 0) {
+        GABLog(@"规则文件不存在: %@", kGABRulesPath);
+        g_rulesMapFailed = YES;
+        return NO;
     }
 
-    NSData *data = [NSData dataWithContentsOfFile:rulesPath];
-    if (!data) {
-        GABLog(@"读取规则文件失败: %@", rulesPath);
-        g_exactDomains = [NSSet set];
-        g_suffixDomains = [NSSet set];
-        g_rulesLoaded = YES;
-        return;
+    struct stat st;
+    if (fstat(fd, &st) != 0 || st.st_size < (off_t)sizeof(gab_rules_header_t)) {
+        GABLog(@"规则文件太小或无法 stat");
+        close(fd);
+        g_rulesMapFailed = YES;
+        return NO;
     }
 
-    NSError *error = nil;
-    NSDictionary *rules = [NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
-    if (!rules || error) {
-        GABLog(@"解析规则失败: %@", error);
-        g_exactDomains = [NSSet set];
-        g_suffixDomains = [NSSet set];
-        g_rulesLoaded = YES;
-        return;
+    void *addr = mmap(NULL, st.st_size, PROT_READ, MAP_SHARED, fd, 0);
+    if (addr == MAP_FAILED) {
+        GABLog(@"mmap 失败 (errno=%d)", errno);
+        close(fd);
+        g_rulesMapFailed = YES;
+        return NO;
     }
 
-    NSArray *exact = rules[@"exact"] ?: @[];
-    NSArray *suffix = rules[@"suffix"] ?: @[];
+    int ret = gab_rules_init(&g_rulesCtx, addr, st.st_size);
+    if (ret != 0) {
+        GABLog(@"规则文件校验失败: error=%d", ret);
+        munmap(addr, st.st_size);
+        close(fd);
+        g_rulesMapFailed = YES;
+        return NO;
+    }
 
-    g_exactDomains = [NSSet setWithArray:exact];
-    g_suffixDomains = [NSSet setWithArray:suffix];
-    g_rulesLoaded = YES;
+    g_rulesMmapAddr = addr;
+    g_rulesMmapSize = st.st_size;
+    g_rulesMmapFd = fd;
+    g_rulesMapped = YES;
 
-    GABLog(@"规则加载完成: 精确 %lu 条, 后缀 %lu 条",
-          (unsigned long)g_exactDomains.count,
-          (unsigned long)g_suffixDomains.count);
+    GABLog(@"规则 mmap 成功: %s (%zu bytes, 精确 %u 条, 后缀 %u 条)",
+          path, st.st_size, g_rulesCtx.header->exact_count, g_rulesCtx.header->suffix_count);
+    return YES;
+}
+
+static void unmapRules(void) {
+    if (g_rulesMmapAddr && g_rulesMmapSize > 0) {
+        munmap(g_rulesMmapAddr, g_rulesMmapSize);
+        g_rulesMmapAddr = NULL;
+        g_rulesMmapSize = 0;
+    }
+    if (g_rulesMmapFd >= 0) {
+        close(g_rulesMmapFd);
+        g_rulesMmapFd = -1;
+    }
+    memset(&g_rulesCtx, 0, sizeof(g_rulesCtx));
+    g_rulesMapped = NO;
+    g_rulesMapFailed = NO;
 }
 
 static BOOL isDomainBlocked(NSString *host) {
-    if (!g_rulesLoaded) {
-        loadRules();
-    }
     if (!host || host.length == 0) return NO;
-
+    if (!g_rulesMapped) {
+        if (!mapRules()) return NO;
+    }
     NSString *lowerHost = [host lowercaseString];
-    if ([g_exactDomains containsObject:lowerHost]) {
-        return YES;
-    }
-    for (NSString *suffix in g_suffixDomains) {
-        if ([lowerHost hasSuffix:suffix]) {
-            if (lowerHost.length == suffix.length ||
-                [lowerHost characterAtIndex:lowerHost.length - suffix.length - 1] == '.') {
-                return YES;
-            }
-        }
-    }
-    return NO;
-}
-
-// 从 NSUserDefaults 一次性读取所有设置到内存缓存
-// darwin 通知触发时才重读，平时零开销
-static void vpnReloadSettingsCache(void) {
-    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kGABDefaultsDomain];
-    NSDictionary *all = [defaults dictionaryRepresentation];
-    g_masterEnabledCache = all ? [all[kGABMasterSwitchKey] boolValue] : YES;
-    g_appEnabledCache = [NSMutableSet set];
-    for (NSString *k in all) {
-        if ([k hasPrefix:kGABAppEnabledPrefix] && [all[k] boolValue]) {
-            [g_appEnabledCache addObject:[k substringFromIndex:kGABAppEnabledPrefix.length]];
-        }
-    }
+    const char *hostCStr = [lowerHost UTF8String];
+    size_t hostLen = strlen(hostCStr);
+    return gab_rules_match(&g_rulesCtx, hostCStr, hostLen) ? YES : NO;
 }
 
 static BOOL isMasterEnabled(void) {
-    return g_masterEnabledCache;
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kGABDefaultsDomain];
+    if (![defaults objectForKey:kGABMasterSwitchKey]) return YES;
+    return [defaults boolForKey:kGABMasterSwitchKey];
 }
 
 static BOOL isAppEnabled(NSString *bundleId) {
     if (!bundleId) return NO;
-    // 用户没在 prefs 启用该 App = 不拦截（默认白名单为空）
-    return [g_appEnabledCache containsObject:bundleId];
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kGABDefaultsDomain];
+    NSString *key = [NSString stringWithFormat:@"%@%@", kGABAppEnabledPrefix, bundleId];
+    if (![defaults objectForKey:key]) return NO;
+    return [defaults boolForKey:key];
 }
 
 static NSString *currentAppBundleId(void) {
@@ -135,69 +130,43 @@ static NSString *currentAppBundleId(void) {
 }
 
 static void settingsChangedCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
-    GABLog(@"收到设置变更通知，重载规则+刷新缓存");
-    g_rulesLoaded = NO;
-    loadRules();
-    vpnReloadSettingsCache();
+    GABLog(@"收到设置变更通知，重新映射规则");
+    unmapRules();
+    if (g_rulesMapped || g_rulesMapFailed) {
+        mapRules();
+    }
 }
 
 static void __attribute__((constructor)) initialize(void) {
     @autoreleasepool {
-        GABLog(@"插件初始化");
-        loadRules();
-        vpnReloadSettingsCache();
-
+        GABLog(@"插件初始化(v3.0 mmap共享内存+二进制哈希表)");
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
-                                        NULL,
-                                        settingsChangedCallback,
+                                        NULL, settingsChangedCallback,
                                         (CFStringRef)kGABDarwinNotification,
-                                        NULL,
-                                        CFNotificationSuspensionBehaviorDeliverImmediately);
-
-        GABLog(@"初始化完成, 当前 App: %@", currentAppBundleId());
+                                        NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+        GABLog(@"初始化完成, 当前 App: %@ (规则将在首次拦截请求时mmap懒加载)", currentAppBundleId());
     }
 }
 
-// Hook NSURLSessionTask resume：拦截所有 HTTP 请求
 %hook NSURLSessionTask
 
 - (void)resume {
     @try {
-        // 1. 总开关检查（哈希表查 O(1)）
-        if (!isMasterEnabled()) {
-            %orig;
-            return;
-        }
-
-        // 2. App 白名单检查（哈希表查 O(1)）
+        if (!isMasterEnabled()) { %orig; return; }
         NSString *bundleId = currentAppBundleId();
-        if (!isAppEnabled(bundleId)) {
-            %orig;
-            return;
-        }
-
-        // 3. 提取 host
+        if (!isAppEnabled(bundleId)) { %orig; return; }
         NSURL *url = [self originalRequest] ? [[self originalRequest] URL] : [[self currentRequest] URL];
-        if (!url) {
-            %orig;
-            return;
-        }
+        if (!url) { %orig; return; }
         NSString *host = [url host];
-        if (!host) {
-            %orig;
-            return;
-        }
-
-        // 4. 拦截广告域名
+        if (!host) { %orig; return; }
         if (isDomainBlocked(host)) {
-            GABLog(@"拦截: %@ (App: %@)", host, bundleId);
+            GABLog(@"拦截广告: %@ (App: %@)", host, bundleId);
             [self cancel];
             return;
         }
     } @catch (NSException *e) {
         GABLog(@"resume hook 异常: %@", e);
     }
-
     %orig;
 }
 

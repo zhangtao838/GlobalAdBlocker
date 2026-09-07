@@ -8,7 +8,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>全局广告拦截器，内置 20 万条广告域名规则，支持导入 Loon 格式规则。默认所有 App 均未开启，需手动开启才会拦截，可减小资源开销。</string>
+			<string>全局广告拦截器 v3.0，mmap 共享内存 + 二进制哈希表，内存占用极低。内置 20 万条广告域名规则，支持导入 Loon 格式规则。默认所有 App 均未开启，需手动开启才会拦截。</string>
 		</dict>
 		<dict>
 			<key>PostNotification</key>
@@ -31,14 +31,23 @@
 			<string>功能</string>
 		</dict>
 		<dict>
-			<key>action</key>
-			<string>openAppList</string>
 			<key>cell</key>
 			<string>PSLinkCell</string>
 			<key>detail</key>
 			<string>GABAppListController</string>
 			<key>label</key>
 			<string>按 App 管理</string>
+			<key>isApplicationList</key>
+			<true/>
+			<key>sections</key>
+			<array>
+				<string>User</string>
+				<string>System</string>
+			</array>
+			<key>useSearchBar</key>
+			<true/>
+			<key>showIdentifiersAsSubtitle</key>
+			<true/>
 		</dict>
 		<dict>
 			<key>action</key>

@@ -2,326 +2,274 @@
 #import <Preferences/PSSpecifier.h>
 #import <Preferences/PSTableCell.h>
 #import "GABLog.h"
+#import "GABBinaryRules.h"
 
 #define kGABDarwinNotification @"com.globaladblocker.settingsChanged"
-// prefs 进程在 user 空间（嫁接后），bundle 目录可见
-#define kGABCustomRulesPath @"/Library/Application Support/GlobalAdBlocker/custom_rules.json"
-#define kGABDefaultRulesPath @"/Library/PreferenceBundles/GlobalAdBlockerPrefs.bundle/default_rules.json"
+#define kGABRulesPath @"/Library/Application Support/GlobalAdBlocker/rules.bin"
 
 @implementation GABRuleManagerController
 
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"规则管理";
-    GABLog(@"规则管理页面加载");
+    GABLog(@"规则管理页面加载(v3.0 二进制规则)");
     [self loadRuleCounts];
 }
 
 - (void)loadRuleCounts {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *rulesPath = nil;
-
-    // 检查 PreferenceBundle 目录
-    NSString *bundleDir = @"/Library/PreferenceBundles/GlobalAdBlockerPrefs.bundle";
-    BOOL dirExists = [fm fileExistsAtPath:bundleDir];
-    GABLog(@"PreferenceBundle 目录 %@ : %@", bundleDir, dirExists ? @"存在" : @"不存在");
-    if (dirExists) {
-        NSArray *dirFiles = [fm contentsOfDirectoryAtPath:bundleDir error:nil];
-        GABLog(@"PreferenceBundle 内容: %@", dirFiles);
+    if ([fm fileExistsAtPath:kGABRulesPath]) {
+        rulesPath = kGABRulesPath;
+    } else {
+        NSString *jbPath = [@"/var/jb" stringByAppendingString:kGABRulesPath];
+        if ([fm fileExistsAtPath:jbPath]) rulesPath = jbPath;
     }
-
-    NSString *jbBundleDir = @"/var/jb/Library/PreferenceBundles/GlobalAdBlockerPrefs.bundle";
-    BOOL jbDirExists = [fm fileExistsAtPath:jbBundleDir];
-    GABLog(@"PreferenceBundle(RootHide) 目录 %@ : %@", jbBundleDir, jbDirExists ? @"存在" : @"不存在");
-    if (jbDirExists) {
-        NSArray *dirFiles = [fm contentsOfDirectoryAtPath:jbBundleDir error:nil];
-        GABLog(@"PreferenceBundle(RootHide) 内容: %@", dirFiles);
-    }
-
-    // 检查所有可能的路径
-    NSArray *possiblePaths = @[
-        kGABCustomRulesPath,
-        [@"/var/jb" stringByAppendingString:kGABCustomRulesPath],
-        kGABDefaultRulesPath,
-        [@"/var/jb" stringByAppendingString:kGABDefaultRulesPath],
-    ];
-
-    for (NSString *path in possiblePaths) {
-        BOOL exists = [fm fileExistsAtPath:path];
-        GABLog(@"检查路径 %@ : %@", path, exists ? @"存在" : @"不存在");
-        if (exists && !rulesPath) {
-            rulesPath = path;
-        }
-    }
-
-    GABLog(@"最终使用规则文件路径: %@", rulesPath);
-
     if (!rulesPath) {
         self.exactCount = 0;
         self.suffixCount = 0;
-        GABLog(@"未找到规则文件");
         return;
     }
-
     NSData *data = [NSData dataWithContentsOfFile:rulesPath];
-    if (!data) {
-        GABLog(@"读取规则文件失败");
+    if (!data || data.length < sizeof(gab_rules_header_t)) {
         self.exactCount = 0;
         self.suffixCount = 0;
         return;
     }
-
-    NSError *error = nil;
-    NSDictionary *rules = [NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
-    if (!rules || error) {
-        GABLog(@"解析规则失败: %@", error);
+    const gab_rules_header_t *header = (const gab_rules_header_t *)data.bytes;
+    if (header->magic != GAB_RULES_MAGIC) {
         self.exactCount = 0;
         self.suffixCount = 0;
         return;
     }
-
-    self.exactCount = [rules[@"exact"] count];
-    self.suffixCount = [rules[@"suffix"] count];
-    GABLog(@"规则加载完成: 精确 %ld, 后缀 %ld", (long)self.exactCount, (long)self.suffixCount);
+    self.exactCount = header->exact_count;
+    self.suffixCount = header->suffix_count;
 }
 
 - (NSArray *)specifiers {
     if (!_specifiers) {
         NSMutableArray *specs = [NSMutableArray array];
-
-        PSSpecifier *group1 = [PSSpecifier preferenceSpecifierNamed:@"当前规则" target:self set:Nil get:Nil detail:Nil cell:PSGroupCell edit:Nil];
-        [specs addObject:group1];
-
-        PSSpecifier *typeSpec = [PSSpecifier preferenceSpecifierNamed:@"规则来源" target:self set:Nil get:@selector(ruleSource) detail:Nil cell:PSTitleValueCell edit:Nil];
-        [specs addObject:typeSpec];
-
-        PSSpecifier *exactSpec = [PSSpecifier preferenceSpecifierNamed:@"精确匹配" target:self set:Nil get:@selector(exactCountString) detail:Nil cell:PSTitleValueCell edit:Nil];
-        [specs addObject:exactSpec];
-
-        PSSpecifier *suffixSpec = [PSSpecifier preferenceSpecifierNamed:@"后缀匹配" target:self set:Nil get:@selector(suffixCountString) detail:Nil cell:PSTitleValueCell edit:Nil];
-        [specs addObject:suffixSpec];
-
-        PSSpecifier *group2 = [PSSpecifier preferenceSpecifierNamed:@"导入规则" target:self set:Nil get:Nil detail:Nil cell:PSGroupCell edit:Nil];
-        [specs addObject:group2];
-
+        [specs addObject:[PSSpecifier preferenceSpecifierNamed:@"当前规则" target:self set:Nil get:Nil detail:Nil cell:PSGroupCell edit:Nil]];
+        [specs addObject:[PSSpecifier preferenceSpecifierNamed:@"精确匹配" target:self set:Nil get:@selector(exactCountString) detail:Nil cell:PSTitleValueCell edit:Nil]];
+        [specs addObject:[PSSpecifier preferenceSpecifierNamed:@"后缀匹配" target:self set:Nil get:@selector(suffixCountString) detail:Nil cell:PSTitleValueCell edit:Nil]];
+        [specs addObject:[PSSpecifier preferenceSpecifierNamed:@"规则文件" target:self set:Nil get:Nil detail:Nil cell:PSGroupCell edit:Nil]];
+        PSSpecifier *pathSpec = [PSSpecifier preferenceSpecifierNamed:kGABRulesPath target:self set:Nil get:Nil detail:Nil cell:PSTitleValueCell edit:Nil];
+        [specs addObject:pathSpec];
+        PSSpecifier *pathHint = [PSSpecifier preferenceSpecifierNamed:@"说明" target:self set:Nil get:Nil detail:Nil cell:PSGroupCell edit:Nil];
+        [pathHint setProperty:@"可用 Filza 直接替换此二进制规则文件，或在下方导入 Loon 规则自动编译。替换后点击「重新加载规则」立即生效。" forKey:@"footerText"];
+        [specs addObject:pathHint];
+        [specs addObject:[PSSpecifier preferenceSpecifierNamed:@"操作" target:self set:Nil get:Nil detail:Nil cell:PSGroupCell edit:Nil]];
         PSSpecifier *importSpec = [PSSpecifier preferenceSpecifierNamed:@"从文件导入（Loon 格式）" target:self set:Nil get:Nil detail:Nil cell:PSButtonCell edit:Nil];
         [importSpec setProperty:@"importRules" forKey:@"action"];
         [specs addObject:importSpec];
-
-        PSSpecifier *resetSpec = [PSSpecifier preferenceSpecifierNamed:@"恢复默认规则" target:self set:Nil get:Nil detail:Nil cell:PSButtonCell edit:Nil];
-        [resetSpec setProperty:@"resetRules" forKey:@"action"];
-        [specs addObject:resetSpec];
-
-        // 一键刷新：重读规则 + 重扫 App 列表
-        PSSpecifier *refreshSpec = [PSSpecifier preferenceSpecifierNamed:@"刷新（重读规则 + 重扫 App）"
-                                                                  target:self
-                                                                     set:Nil
-                                                                     get:Nil
-                                                                  detail:Nil
-                                                                    cell:PSButtonCell
-                                                                    edit:Nil];
-        [refreshSpec setProperty:@"refreshAll" forKey:@"action"];
-        [specs addObject:refreshSpec];
-
-        // 用 footerText 显示说明，避免文字被截断
-        PSSpecifier *group3 = [PSSpecifier preferenceSpecifierNamed:@"说明" target:self set:Nil get:Nil detail:Nil cell:PSGroupCell edit:Nil];
-        [group3 setProperty:@"支持 Loon 导出的 .list / .conf 格式，自动识别 DOMAIN 和 DOMAIN-SUFFIX 规则。导入后所有 App 进程自动重载规则，立即生效。日志文件: /tmp/globaladblocker.log" forKey:@"footerText"];
-        [specs addObject:group3];
-
+        PSSpecifier *reloadSpec = [PSSpecifier preferenceSpecifierNamed:@"重新加载规则" target:self set:Nil get:Nil detail:Nil cell:PSButtonCell edit:Nil];
+        [reloadSpec setProperty:@"reloadRules" forKey:@"action"];
+        [specs addObject:reloadSpec];
+        PSSpecifier *clearSpec = [PSSpecifier preferenceSpecifierNamed:@"清空规则" target:self set:Nil get:Nil detail:Nil cell:PSButtonCell edit:Nil];
+        [clearSpec setProperty:@"clearRules" forKey:@"action"];
+        [specs addObject:clearSpec];
         _specifiers = specs;
     }
     return _specifiers;
 }
 
-- (NSString *)ruleSource {
-    NSFileManager *fm = [NSFileManager defaultManager];
-    if ([fm fileExistsAtPath:kGABCustomRulesPath]) return @"自定义（已导入）";
-    NSString *jbPath = [@"/var/jb" stringByAppendingString:kGABCustomRulesPath];
-    if ([fm fileExistsAtPath:jbPath]) return @"自定义（已导入）";
-    return @"内置默认";
+- (NSString *)exactCountString { return [NSString stringWithFormat:@"%u 条", (unsigned)self.exactCount]; }
+- (NSString *)suffixCountString { return [NSString stringWithFormat:@"%u 条", (unsigned)self.suffixCount]; }
+
+- (void)reloadRules {
+    [self loadRuleCounts];
+    _specifiers = nil;
+    [self reloadSpecifiers];
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), (CFStringRef)kGABDarwinNotification, NULL, NULL, true);
+    [self showAlert:@"已重新加载" message:[NSString stringWithFormat:@"精确 %u 条，后缀 %u 条，所有 App 进程已立即重新映射", (unsigned)self.exactCount, (unsigned)self.suffixCount]];
 }
 
-- (NSString *)exactCountString {
-    return [NSString stringWithFormat:@"%ld 条", (long)self.exactCount];
-}
-
-- (NSString *)suffixCountString {
-    return [NSString stringWithFormat:@"%ld 条", (long)self.suffixCount];
+- (void)clearRules {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"清空规则" message:@"确定删除所有规则吗？" preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"确定清空" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        NSFileManager *fm = [NSFileManager defaultManager];
+        [fm removeItemAtPath:kGABRulesPath error:nil];
+        [fm removeItemAtPath:[@"/var/jb" stringByAppendingString:kGABRulesPath] error:nil];
+        CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), (CFStringRef)kGABDarwinNotification, NULL, NULL, true);
+        [self loadRuleCounts];
+        _specifiers = nil;
+        [self reloadSpecifiers];
+        [self showAlert:@"已清空" message:@"规则已清空，可导入 Loon 规则重新添加"];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)importRules {
-    GABLog(@"点击导入规则按钮");
-
-    UIDocumentPickerViewController *picker = nil;
-    @try {
-        picker = [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.text", @"public.data", @"com.apple.property-list"] inMode:UIDocumentPickerModeImport];
-        picker.delegate = self;
-        picker.allowsMultipleSelection = NO;
-    } @catch (NSException *e) {
-        GABLog(@"创建 DocumentPicker 失败: %@", e);
-        [self showAlert:@"导入失败" message:@"无法创建文件选择器，请检查系统版本"];
-        return;
-    }
-
-    if (!picker) {
-        GABLog(@"DocumentPicker 创建失败，返回 nil");
-        [self showAlert:@"导入失败" message:@"无法创建文件选择器"];
-        return;
-    }
-
-    GABLog(@"DocumentPicker 创建成功，开始 present");
-
-    @try {
-        [self presentViewController:picker animated:YES completion:^{
-            GABLog(@"DocumentPicker present 完成");
-        }];
-    } @catch (NSException *e) {
-        GABLog(@"present DocumentPicker 失败: %@", e);
-        [self showAlert:@"导入失败" message:[NSString stringWithFormat:@"无法打开文件选择器: %@", e]];
-    }
+    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.text", @"public.data", @"com.apple.property-list"] inMode:UIDocumentPickerModeImport];
+    picker.delegate = self;
+    picker.allowsMultipleSelection = NO;
+    [self presentViewController:picker animated:YES completion:nil];
 }
 
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
-    GABLog(@"documentPicker 回调，URL 数量: %lu", (unsigned long)urls.count);
-    if (urls.count == 0) {
-        GABLog(@"没有选择文件");
-        return;
-    }
+    if (urls.count == 0) return;
     [self importRulesFromFile:urls[0]];
 }
 
-- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
-    GABLog(@"用户取消了文件选择");
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {}
+
+static uint32_t gab_hash_c(const char *str, size_t len) {
+    uint32_t hash = 2166136261u;
+    for (size_t i = 0; i < len; i++) { hash ^= (uint8_t)str[i]; hash *= 16777619u; }
+    return hash;
+}
+
+static uint32_t next_power_of_2(uint32_t n) {
+    if (n == 0) return 1;
+    n--; n |= n >> 1; n |= n >> 2; n |= n >> 4; n |= n >> 8; n |= n >> 16;
+    return n + 1;
 }
 
 - (void)importRulesFromFile:(NSURL *)fileURL {
-    GABLog(@"开始导入文件: %@", fileURL);
-
-    NSError *error = nil;
-    NSString *content = [NSString stringWithContentsOfURL:fileURL encoding:NSUTF8StringEncoding error:&error];
-    if (!content) {
-        GABLog(@"UTF8 读取失败: %@，尝试 ASCII", error);
-        content = [NSString stringWithContentsOfURL:fileURL encoding:NSASCIIStringEncoding error:nil];
-    }
-
-    if (!content) {
-        GABLog(@"无法读取文件内容");
-        [self showAlert:@"导入失败" message:@"无法读取文件内容"];
-        return;
-    }
-
-    GABLog(@"文件内容长度: %lu", (unsigned long)content.length);
+    NSString *content = [NSString stringWithContentsOfURL:fileURL encoding:NSUTF8StringEncoding error:nil];
+    if (!content) content = [NSString stringWithContentsOfURL:fileURL encoding:NSASCIIStringEncoding error:nil];
+    if (!content) { [self showAlert:@"导入失败" message:@"无法读取文件内容"]; return; }
 
     NSMutableSet *exactDomains = [NSMutableSet set];
     NSMutableSet *suffixDomains = [NSMutableSet set];
-
-    NSArray *lines = [content componentsSeparatedByString:@"\n"];
-    GABLog(@"文件行数: %lu", (unsigned long)lines.count);
-
-    for (NSString *line in lines) {
+    for (NSString *line in [content componentsSeparatedByString:@"\n"]) {
         NSString *trimmed = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         if (trimmed.length == 0 || [trimmed hasPrefix:@"#"]) continue;
-
         NSArray *parts = [trimmed componentsSeparatedByString:@","];
         if (parts.count < 2) continue;
-
         NSString *ruleType = [parts[0] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
         NSString *domain = [[parts[1] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] lowercaseString];
         if (domain.length == 0) continue;
-
-        if ([ruleType isEqualToString:@"DOMAIN"]) {
-            [exactDomains addObject:domain];
-        } else if ([ruleType isEqualToString:@"DOMAIN-SUFFIX"] || [ruleType isEqualToString:@"DOMAIN-KEYWORD"]) {
-            [suffixDomains addObject:domain];
-        }
+        if ([ruleType isEqualToString:@"DOMAIN"]) [exactDomains addObject:domain];
+        else if ([ruleType isEqualToString:@"DOMAIN-SUFFIX"] || [ruleType isEqualToString:@"DOMAIN-KEYWORD"]) [suffixDomains addObject:domain];
     }
 
-    GABLog(@"解析完成: 精确 %lu, 后缀 %lu", (unsigned long)exactDomains.count, (unsigned long)suffixDomains.count);
-
     if (exactDomains.count == 0 && suffixDomains.count == 0) {
-        GABLog(@"未找到有效规则");
         [self showAlert:@"导入失败" message:@"未找到有效规则，请确认是 Loon 格式（DOMAIN 或 DOMAIN-SUFFIX 开头）"];
         return;
     }
 
-    NSDictionary *rules = @{@"exact": [exactDomains allObjects], @"suffix": [suffixDomains allObjects]};
-    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:rules options:0 error:nil];
-    if (!jsonData) {
-        GABLog(@"规则数据序列化失败");
-        [self showAlert:@"导入失败" message:@"规则数据序列化失败"];
-        return;
-    }
+    NSData *binaryData = [self compileBinaryRulesWithExact:exactDomains suffix:suffixDomains];
+    if (!binaryData) { [self showAlert:@"导入失败" message:@"规则编译失败"]; return; }
 
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *savePath = kGABCustomRulesPath;
+    NSString *savePath = kGABRulesPath;
     [fm createDirectoryAtPath:[savePath stringByDeletingLastPathComponent] withIntermediateDirectories:YES attributes:nil error:nil];
-
-    BOOL saved = [jsonData writeToFile:savePath atomically:YES];
-    GABLog(@"保存到 %@: %@", savePath, saved ? @"成功" : @"失败");
-
+    BOOL saved = [binaryData writeToFile:savePath atomically:YES];
     if (!saved) {
         NSString *jbSavePath = [@"/var/jb" stringByAppendingString:savePath];
         [fm createDirectoryAtPath:[jbSavePath stringByDeletingLastPathComponent] withIntermediateDirectories:YES attributes:nil error:nil];
-        saved = [jsonData writeToFile:jbSavePath atomically:YES];
-        GABLog(@"保存到 %@: %@", jbSavePath, saved ? @"成功" : @"失败");
+        saved = [binaryData writeToFile:jbSavePath atomically:YES];
     }
+    if (!saved) { [self showAlert:@"导入失败" message:@"无法保存规则文件"]; return; }
 
-    if (!saved) {
-        GABLog(@"保存规则文件失败");
-        [self showAlert:@"导入失败" message:@"无法保存规则文件，请检查权限"];
-        return;
-    }
-
-    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
-                                          (CFStringRef)kGABDarwinNotification,
-                                          NULL, NULL, true);
-
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), (CFStringRef)kGABDarwinNotification, NULL, NULL, true);
     [self loadRuleCounts];
+    _specifiers = nil;
     [self reloadSpecifiers];
-
-    GABLog(@"导入成功");
-    [self showAlert:@"导入成功"
-             message:[NSString stringWithFormat:@"共导入 %ld 条规则（精确 %ld 条，后缀 %ld 条），已立即生效",
-                      (long)(exactDomains.count + suffixDomains.count),
-                      (long)exactDomains.count,
-                      (long)suffixDomains.count]];
+    [self showAlert:@"导入成功" message:[NSString stringWithFormat:@"共导入 %lu 条规则（精确 %lu 条，后缀 %lu 条），已编译为二进制格式并立即生效。", (unsigned long)(exactDomains.count + suffixDomains.count), (unsigned long)exactDomains.count, (unsigned long)suffixDomains.count]];
 }
 
-- (void)refreshAll {
-    GABLog(@"一键刷新：重读规则");
-    // 触发 darwin 通知，tweak 收到后会重新读规则文件和设置
-    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
-                                      (CFStringRef)kGABDarwinNotification,
-                                      NULL, NULL, true);
-    [self loadRuleCounts];
-    [self reloadSpecifiers];
-    GABLog(@"刷新完成");
-    [self showAlert:@"已刷新" message:@"规则已重载，下次点击会读最新内容"];
-}
+- (NSData *)compileBinaryRulesWithExact:(NSSet *)exactSet suffix:(NSSet *)suffixSet {
+    NSArray *exactDomains = [[exactSet allObjects] sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
+    NSArray *suffixDomains = [[suffixSet allObjects] sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
+    uint32_t exactCount = (uint32_t)exactDomains.count;
+    uint32_t suffixCount = (uint32_t)suffixDomains.count;
 
-- (void)resetRules {
-    GABLog(@"点击恢复默认规则");
+    NSMutableData *stringPool = [NSMutableData dataWithBytes:"\x00" length:1];
+    NSMutableDictionary *domainOffsets = [NSMutableDictionary dictionary];
+    for (NSString *domain in exactDomains) {
+        if (domainOffsets[domain]) continue;
+        NSData *domainData = [domain dataUsingEncoding:NSUTF8StringEncoding];
+        uint8_t nullByte = 0;
+        [stringPool appendData:domainData];
+        [stringPool appendBytes:&nullByte length:1];
+        domainOffsets[domain] = @(stringPool.length - domainData.length - 1);
+    }
+    for (NSString *domain in suffixDomains) {
+        if (domainOffsets[domain]) continue;
+        NSData *domainData = [domain dataUsingEncoding:NSUTF8StringEncoding];
+        uint8_t nullByte = 0;
+        [stringPool appendData:domainData];
+        [stringPool appendBytes:&nullByte length:1];
+        domainOffsets[domain] = @(stringPool.length - domainData.length - 1);
+    }
+    uint32_t stringPoolSize = (uint32_t)stringPool.length;
 
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"恢复默认规则"
-                                                                     message:@"确定删除自定义规则，恢复内置默认规则吗？"
-                                                              preferredStyle:UIAlertControllerStyleAlert];
+    uint32_t exactHashSize = (exactCount > 0) ? next_power_of_2(exactCount * 2) : 1;
+    NSMutableData *exactTable = [NSMutableData dataWithLength:exactHashSize * sizeof(gab_exact_entry_t)];
+    gab_exact_entry_t *exactEntries = (gab_exact_entry_t *)exactTable.mutableBytes;
+    for (NSString *domain in exactDomains) {
+        const char *domainCStr = [domain UTF8String];
+        size_t domainLen = strlen(domainCStr);
+        uint32_t hash = gab_hash_c(domainCStr, domainLen);
+        uint32_t mask = exactHashSize - 1;
+        uint32_t idx = hash & mask;
+        uint32_t strOffset = [domainOffsets[domain] unsignedIntValue];
+        while (exactEntries[idx].str_offset != 0) idx = (idx + 1) & mask;
+        exactEntries[idx].hash = hash;
+        exactEntries[idx].str_offset = strOffset;
+    }
 
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
-        NSFileManager *fm = [NSFileManager defaultManager];
-        [fm removeItemAtPath:kGABCustomRulesPath error:nil];
-        [fm removeItemAtPath:[@"/var/jb" stringByAppendingString:kGABCustomRulesPath] error:nil];
+    NSMutableArray *buckets = [NSMutableArray arrayWithCapacity:GAB_BUCKET_COUNT];
+    for (int i = 0; i < GAB_BUCKET_COUNT; i++) [buckets addObject:[NSMutableArray array]];
+    for (NSString *domain in suffixDomains) {
+        const char *domainCStr = [domain UTF8String];
+        size_t domainLen = strlen(domainCStr);
+        uint8_t lastByte = (uint8_t)domainCStr[domainLen - 1];
+        [buckets[lastByte] addObject:domain];
+    }
+    for (int i = 0; i < GAB_BUCKET_COUNT; i++) buckets[i] = [buckets[i] sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
 
-        CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
-                                              (CFStringRef)kGABDarwinNotification,
-                                              NULL, NULL, true);
-        [self loadRuleCounts];
-        [self reloadSpecifiers];
-        GABLog(@"已恢复默认规则");
-        [self showAlert:@"已恢复" message:@"已恢复内置默认规则"];
-    }]];
+    uint32_t bucketOffsets[GAB_BUCKET_COUNT];
+    uint32_t bucketCounts[GAB_BUCKET_COUNT];
+    uint32_t currentOffset = 0;
+    for (int i = 0; i < GAB_BUCKET_COUNT; i++) {
+        bucketOffsets[i] = currentOffset;
+        bucketCounts[i] = (uint32_t)[buckets[i] count];
+        currentOffset += bucketCounts[i];
+    }
 
-    [self presentViewController:alert animated:YES completion:nil];
+    NSMutableData *suffixArray = [NSMutableData dataWithLength:suffixCount * sizeof(gab_suffix_entry_t)];
+    gab_suffix_entry_t *suffixEntries = (gab_suffix_entry_t *)suffixArray.mutableBytes;
+    uint32_t suffixIdx = 0;
+    for (int i = 0; i < GAB_BUCKET_COUNT; i++) {
+        for (NSString *domain in buckets[i]) {
+            const char *domainCStr = [domain UTF8String];
+            suffixEntries[suffixIdx].length = (uint16_t)strlen(domainCStr);
+            suffixEntries[suffixIdx].str_offset = [domainOffsets[domain] unsignedIntValue];
+            suffixIdx++;
+        }
+    }
+
+    uint32_t headerSize = (uint32_t)sizeof(gab_rules_header_t);
+    uint32_t exactHashOffset = headerSize;
+    uint32_t suffixArrayOffset = exactHashOffset + exactHashSize * (uint32_t)sizeof(gab_exact_entry_t);
+    uint32_t stringPoolOffset = suffixArrayOffset + suffixCount * (uint32_t)sizeof(gab_suffix_entry_t);
+    if (stringPoolOffset % 4 != 0) stringPoolOffset += 4 - (stringPoolOffset % 4);
+    uint32_t totalSize = stringPoolOffset + stringPoolSize;
+
+    NSMutableData *binary = [NSMutableData dataWithCapacity:totalSize];
+    gab_rules_header_t header;
+    memset(&header, 0, sizeof(header));
+    header.magic = GAB_RULES_MAGIC;
+    header.version = GAB_RULES_VERSION;
+    header.exact_count = exactCount;
+    header.suffix_count = suffixCount;
+    header.exact_hash_size = exactHashSize;
+    header.exact_hash_offset = exactHashOffset;
+    header.suffix_array_offset = suffixArrayOffset;
+    header.string_pool_offset = stringPoolOffset;
+    header.string_pool_size = stringPoolSize;
+    memcpy(header.bucket_offsets, bucketOffsets, sizeof(bucketOffsets));
+    memcpy(header.bucket_counts, bucketCounts, sizeof(bucketCounts));
+    [binary appendBytes:&header length:sizeof(header)];
+    [binary appendData:exactTable];
+    [binary appendData:suffixArray];
+    while (binary.length < stringPoolOffset) { uint8_t zero = 0; [binary appendBytes:&zero length:1]; }
+    [binary appendData:stringPool];
+    return binary;
 }
 
 - (void)showAlert:(NSString *)title message:(NSString *)message {
