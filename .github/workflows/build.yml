@@ -46,17 +46,24 @@ jobs:
 
       - name: Install AltList framework
         run: |
-          git clone --depth 1 https://github.com/opa334/AltList.git /tmp/AltList
-          cd /tmp/AltList
-          sed -i '' 's/iphone:clang:14.5/iphone:clang:26.5/g' Makefile
-          sed -i '' 's/iphone:clang:latest:7.0/iphone:clang:26.5:15.0/g' Makefile
-          sed -i '' '/^ARCHS/d' Makefile
-          sed -i '' '1i\
-ARCHS = arm64 arm64e
-' Makefile
-          echo "=== Makefile 前10行 ===" && head -10 Makefile
-          make ARCHS="arm64 arm64e"
-          cp -r AltList.framework $THEOS/lib/
+          curl -L -o /tmp/altlist.deb "https://chariz.com/api/deb/com.opa334.altlist"
+          cd /tmp
+          ar -x altlist.deb
+          tar -xzf data.tar.gz 2>/dev/null || tar -xf data.tar.* 2>/dev/null || true
+          find . -name "AltList.framework" -type d 2>/dev/null
+          if [ -d "./Library/Frameworks/AltList.framework" ]; then
+            cp -r ./Library/Frameworks/AltList.framework $THEOS/lib/
+          elif [ -d "./System/Library/Frameworks/AltList.framework" ]; then
+            cp -r ./System/Library/Frameworks/AltList.framework $THEOS/lib/
+          else
+            echo "AltList.framework not found in deb, trying source build"
+            git clone --depth 1 https://github.com/opa334/AltList.git /tmp/AltList-src
+            cd /tmp/AltList-src
+            sed -i '' 's/iphone:clang:14.5/iphone:clang:26.5/g' Makefile
+            sed -i '' 's/iphone:clang:latest:7.0/iphone:clang:26.5:15.0/g' Makefile
+            make ARCHS="arm64 arm64e"
+            cp -r AltList.framework $THEOS/lib/
+          fi
           echo "AltList installed:"
           ls -la $THEOS/lib/AltList.framework/
 
