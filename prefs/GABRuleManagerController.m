@@ -2,6 +2,7 @@
 #import <Preferences/PSSpecifier.h>
 #import <Preferences/PSTableCell.h>
 #import <dlfcn.h>
+#import <objc/runtime.h>
 #import "GABLog.h"
 #import "GABBinaryRules.h"
 
@@ -547,7 +548,10 @@ static uint32_t next_power_of_2(uint32_t n) {
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [super tableView:tableView cellForRowAtIndexPath:indexPath];
 
-    PSSpecifier *specifier = [self specifierForIndexPath:indexPath];
+    // 从 specifiers 数组获取当前 specifier
+    NSArray *specs = [self specifiers];
+    if (indexPath.row >= (NSInteger)specs.count) return cell;
+    PSSpecifier *specifier = specs[indexPath.row];
     NSString *buttonAction = [specifier propertyForKey:@"buttonAction"];
     NSString *buttonTitle = [specifier propertyForKey:@"buttonTitle"];
 
