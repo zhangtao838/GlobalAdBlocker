@@ -5,11 +5,35 @@
 #import <sys/stat.h>
 #import <fcntl.h>
 #import <unistd.h>
+#import <dlfcn.h>
 #import "GABLog.h"
 #import "GABBinaryRules.h"
 
-// libroot - RootHide 路径转换
-extern NSString *jbrootpath(NSString *path);
+// libroot - 动态加载 jbrootpath 函数（避免编译时链接依赖）
+static NSString *(*GABJBRootPath)(NSString *) = NULL;
+static BOOL GABJBRootPathLoaded = NO;
+
+static void GABLoadJBRootPath(void) {
+    if (GABJBRootPathLoaded) return;
+    GABJBRootPathLoaded = YES;
+    const char *libPaths[] = {
+        "/usr/lib/libroot.dylib",
+        "/var/jb/usr/lib/libroot.dylib",
+        NULL
+    };
+    for (int i = 0; libPaths[i]; i++) {
+        void *handle = dlopen(libPaths[i], RTLD_LAZY);
+        if (handle) {
+            GABJBRootPath = (NSString *(*)(NSString *))dlsym(handle, "jbrootpath");
+            if (GABJBRootPath) {
+                GABLog(@"成功加载 libroot jbrootpath: %s", libPaths[i]);
+                return;
+            }
+            dlclose(handle);
+        }
+    }
+    GABLog(@"未找到 libroot jbrootpath，使用原始路径");
+}
 
 #define kGABDefaultsDomain @"com.globaladblocker.settings"
 #define kGABAppEnabledPrefix @"GABAppEnabled_"
@@ -24,10 +48,13 @@ extern NSString *jbrootpath(NSString *path);
 static NSString *GABResolvePath(NSString *path) {
     if (!path) return nil;
     if ([path hasPrefix:@"/var/mobile/"]) return path;
-    @try {
-        NSString *resolved = jbrootpath(path);
-        if (resolved) return resolved;
-    } @catch (NSException *e) {}
+    GABLoadJBRootPath();
+    if (GABJBRootPath) {
+        @try {
+            NSString *resolved = GABJBRootPath(path);
+            if (resolved) return resolved;
+        } @catch (NSException *e) {}
+    }
     return path;
 }
 

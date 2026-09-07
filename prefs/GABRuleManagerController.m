@@ -1,11 +1,31 @@
 #import "GABRuleManagerController.h"
 #import <Preferences/PSSpecifier.h>
 #import <Preferences/PSTableCell.h>
+#import <dlfcn.h>
 #import "GABLog.h"
 #import "GABBinaryRules.h"
 
-// libroot - RootHide 路径转换
-extern NSString *jbrootpath(NSString *path);
+// libroot - 动态加载 jbrootpath 函数（避免编译时链接依赖）
+static NSString *(*GABJBRootPath)(NSString *) = NULL;
+static BOOL GABJBRootPathLoaded = NO;
+
+static void GABLoadJBRootPath(void) {
+    if (GABJBRootPathLoaded) return;
+    GABJBRootPathLoaded = YES;
+    const char *libPaths[] = {
+        "/usr/lib/libroot.dylib",
+        "/var/jb/usr/lib/libroot.dylib",
+        NULL
+    };
+    for (int i = 0; libPaths[i]; i++) {
+        void *handle = dlopen(libPaths[i], RTLD_LAZY);
+        if (handle) {
+            GABJBRootPath = (NSString *(*)(NSString *))dlsym(handle, "jbrootpath");
+            if (GABJBRootPath) return;
+            dlclose(handle);
+        }
+    }
+}
 
 #define kGABDarwinNotification @"com.globaladblocker.settingsChanged"
 #define kGABRulesPath @"/Library/Application Support/GlobalAdBlocker/rules.bin"
@@ -14,13 +34,14 @@ extern NSString *jbrootpath(NSString *path);
 // 路径转换工具：优先用户空间，其次用 jbrootpath 转换越狱路径
 static NSString *GABResolvePath(NSString *path) {
     if (!path) return nil;
-    // 用户空间路径直接返回
     if ([path hasPrefix:@"/var/mobile/"]) return path;
-    // 越狱路径用 jbrootpath 转换
-    @try {
-        NSString *resolved = jbrootpath(path);
-        if (resolved) return resolved;
-    } @catch (NSException *e) {}
+    GABLoadJBRootPath();
+    if (GABJBRootPath) {
+        @try {
+            NSString *resolved = GABJBRootPath(path);
+            if (resolved) return resolved;
+        } @catch (NSException *e) {}
+    }
     return path;
 }
 
